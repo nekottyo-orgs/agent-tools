@@ -1,0 +1,94 @@
+# tagpr が作った bash-gates の Release (tag は bash-gates/vX.Y.Z) に、binary と sha256 を asset として載せる。
+# 起点は release: published。tagpr は GitHub App の token で Release を作る。GITHUB_TOKEN 以外の token の操作は後続の workflow を起こすので、この event は発火する。
+# release event はその tag の commit にある workflow を使う。この workflow が入る前の tag には asset が付かない。
+# PR ではこのファイルを変えたときだけ build を回し、upload は Release のときだけ走る。
+# 取る側は <asset>.sha256 を同じ dir に置いて `shasum -a 256 -c <asset>.sha256` で検証する。
+name: bash-gates-release
+
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - '.github/workflows/bash-gates-release.yml'
+
+permissions: {}
+
+jobs:
+  build:
+    if: github.event_name == 'pull_request' || startsWith(github.event.release.tag_name, 'bash-gates/v')
+    strategy:
+      matrix:
+        include:
+          # 古い glibc の image で build すると、新しい image でも動く
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      # release のときは tag の commit を build する。PR では ref が空になり PR の merge commit になる
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup toolchain install 1.98 --profile minimal && rustup default 1.98
+
+      # runner の arch が変わったときに、別の target の binary を asset 名だけ違えて配らないための確認
+      - name: Check host triple
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "$TARGET"
+
+      - name: Build
+        run: cargo build --release --locked --manifest-path bash-gates/Cargo.toml
+
+      - name: Stage asset
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir dist
+          cp bash-gates/target/release/bash-gates "dist/bash-gates-$TARGET"
+          cd dist
+          shasum -a 256 "bash-gates-$TARGET" > "bash-gates-$TARGET.sha256"
+          shasum -a 256 -c "bash-gates-$TARGET.sha256"
+
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: bash-gates-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  # contents: write はこの job だけに付ける。checkout せず、build の成果物だけを扱う
+  upload:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      # build の job から受け取った後でも sha256 が合うことを確かめる。asset は 2 target 分の 4 ファイルのはず
+      - name: Verify checksums
+        working-directory: dist
+        run: |
+          files=(*)
+          test "${#files[@]}" -eq 4
+          for f in *.sha256; do shasum -a 256 -c "$f"; done
+
+      # --clobber は付けない。build は bit 単位で再現しないので、再実行で asset と sha256 が黙って変わると取る側の固定が壊れる
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/*
