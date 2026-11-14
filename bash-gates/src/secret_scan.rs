@@ -31,7 +31,7 @@ const MASKED_CLASSES: [&str; 3] = ["credential", "cloud-credential", "db-credent
 pub struct Entropy(HashMap<String, f64>);
 
 impl Entropy {
-    fn from_policy(v: Option<&Value>) -> Result<Self, String> {
+    pub(crate) fn from_policy(v: Option<&Value>) -> Result<Self, String> {
         let mut map = HashMap::new();
         if let Some(v) = v {
             let obj = v.as_object().ok_or("entropy must be an object")?;
@@ -199,7 +199,6 @@ fn mask(cls: &str, value: &str) -> String {
 
 // 和は文字の初出順に取る。浮動小数の和は順序で丸めが変わり、Python 実装 (dict の挿入順) と
 // 閾値付近でずれると判定が割れるため
-#[allow(dead_code)] // ルール表の移植で使う
 pub fn shannon_entropy(value: &str) -> f64 {
     if value.is_empty() {
         return 0.0;

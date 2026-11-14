@@ -9,4 +9,4 @@
 
 | tool | 概要 |
 | --- | --- |
-| [bash-gates](bash-gates/) | Bash の PreToolUse hook を束ねる Rust 製の dispatcher。command にきっかけ語がある gate だけを並列に起動し、結果を 1 つにまとめて返す |
+| [bash-gates](bash-gates/) | Bash の PreToolUse hook を束ねる Rust 製の dispatcher。command にきっかけ語がある gate だけを並列に起動し、結果を 1 つにまとめて返す。`bash-gates secret-scan` で、diff の追加行から secret と実環境の識別子を検出する ([設計](bash-gates/docs/adr/0001-secret-scan-subcommand.md)) |
