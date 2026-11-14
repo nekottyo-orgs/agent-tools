@@ -27,7 +27,8 @@ jobs:
       # Lean は証明と vectors.txt の作り直しを検査する。テスト script は lean が PATH に無いとその検査だけ skip する
       - name: Install Lean
         run: |
-          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/v4.2.4/elan-init.sh \
+          # elan v4.2.4 の commit (annotated tag の指す先)。elan-init.sh 自身は elan の binary を releases/latest から取る
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/227caca133724d5516bee25c2aeb3e609478f2d8/elan-init.sh \
             | sh -s -- -y --no-modify-path --default-toolchain leanprover/lean4:v4.35.0
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
