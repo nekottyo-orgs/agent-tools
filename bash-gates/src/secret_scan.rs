@@ -2,7 +2,8 @@
 //       credential を検出して JSON で返す (`bash-gates secret-scan` subcommand)。
 //       判定と deny は呼び出し側 (シェル) の責務で、ここは「何がどこで見つかったか」だけを返す。
 //       hooks/_shared/secret-scan.py の Rust 移植で、検出の有無・位置・rule が揃うようにする。
-//       揃えない箇所 (value の伏せ字、行の区切り、`++` で始まる追加行など) は ADR 0001 に載せている。
+//       揃えない箇所 (value の伏せ字、hunk header の数字、file header の path、不正な UTF-8 など) は
+//       ADR 0001 に載せている。
 //
 // 安全設計 (why):
 //   - 誤検知は除外リストでなく構造で潰す。撃つ gate は無視される gate になるため。
@@ -269,8 +270,9 @@ pub fn shannon_entropy(value: &str) -> f64 {
 }
 
 // diff の行は `\n` だけで分ける。git が行を区切るのは `\n` だけで、`\x0c` や U+2028 などは
-// 行の内容の一部。Python の str.splitlines() の区切り (これらを含む) で割ると、1 つの追加行が
-// 複数の断片に割れて、hunk の行数の勘定が狂い、内容の断片が header と読まれてしまう。
+// 行の内容の一部。従来の実装 (hooks/_shared/secret-scan.py の現行版) も `\n` で分ける。
+// splitlines() のように、これらを区切りにすると、1 つの追加行が複数の断片に割れて、
+// hunk の行数の勘定が狂い、内容の断片が header と読まれてしまう。
 // CRLF の改行の `\r` は行の内容に含めない。末尾の空行は作らない
 fn diff_lines(s: &str) -> Vec<&str> {
     let mut lines: Vec<&str> = s.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
@@ -472,19 +474,18 @@ pub fn run(args: Vec<String>) -> i32 {
         // 例: DB の接続文字列の password をメールの形として拾った検出は、password の一部も報告に出さない。
         // 秘密の範囲は credential の一致全体にする。値だけの位置を一致の中から探すと、
         // 同じ文字列が user 名などに先に現れたとき別の場所を指すため
-        let secret_spans: Vec<(usize, (usize, usize))> = hits
+        let secret_spans: Vec<(usize, usize)> = hits
             .iter()
-            .enumerate()
-            .filter(|(_, (r, _, _))| MASKED_CLASSES.contains(&r.class))
-            .filter_map(|(i, (_, _, s))| Some((i, (*s)?)))
+            .filter(|(r, _, _)| MASKED_CLASSES.contains(&r.class))
+            .filter_map(|(_, _, s)| *s)
             .collect();
-        for (i, (r, value, span)) in hits.into_iter().enumerate() {
+        for (r, value, span) in hits {
             if is_exempt(&exempts, &path, r.class, r.id) {
                 continue;
             }
             // credential 系の検出は mask が先頭 6 文字に絞るので、重なりでは数えない。別 class の検出だけが対象
             let overlaps = !MASKED_CLASSES.contains(&r.class)
-                && span.is_some_and(|(a, b)| secret_spans.iter().any(|&(j, (x, y))| j != i && a < y && x < b));
+                && span.is_some_and(|(a, b)| secret_spans.iter().any(|&(x, y)| a < y && x < b));
             findings.push(json!({
                 "file": path,
                 "line": lineno,
@@ -508,7 +509,7 @@ mod tests {
         assert_eq!(diff_lines("a\n"), ["a"]);
         assert_eq!(diff_lines("a\n\n"), ["a", ""]);
         assert_eq!(diff_lines(""), Vec::<&str>::new());
-        // Python の splitlines の区切りは行の内容の一部として残る
+        // splitlines なら区切りになる文字は行の内容の一部として残る
         let odd = "a\x0bb\x0cc\x1cd\x1de\x1ef\u{85}g\u{2028}h\u{2029}i\x1fj";
         assert_eq!(diff_lines(odd), [odd]);
         // 単独の `\r` も区切りではない。CRLF の `\r` だけを落とす

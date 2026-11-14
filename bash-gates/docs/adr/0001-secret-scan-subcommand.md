@@ -22,7 +22,7 @@ commit と投稿の gate が使う secret 検出器は、Python 3 の単体 scri
   - 行に `secret-scan-gate:allow` を含む追加行は、全ルールの対象から外す (行内の除外)
 - stdout に `{"findings":[{"file","line","class","rule","value"}],"scanned":bool}` を返す。`scanned` が false のときは、policy に載っていない (または null の) repo
 - exit 0 は走査完了 (検出の有無は stdout を見る)、exit 2 は引数・対象 repo の policy の不正、または stdin の読み取り失敗
-- credential 系の `value` は、7 文字以上なら先頭 6 文字と `…`、6 文字以下なら `…` だけを返し、検出した秘密の全体を報告に再掲しない。credential の一致に重なる別 class の検出 (接続文字列の password をメールの形として拾う、など) は、値の一部も出さず `…` だけを返す
+- credential 系の `value` は、7 文字以上なら先頭 6 文字と `…`、6 文字以下なら `…` だけを返し、検出した秘密の全体を報告に再掲しない。credential の一致に重なる別 class の検出 (接続文字列の password をメールの形として拾う、など) は、値の一部も出さず `…` だけを返す。重なりは credential の一致全体で見るので、一致が host まで含む接続文字列 (jdbc など) では、host の IP やメールの値も `…` になる。検出の有無・位置・rule は残る
 
 呼び出し側は、`scanned` が true で `findings` が配列のときだけ結果を信用する。subcommand を持たない古い binary は、exit 0 で stdout が空になる。その場合も検出なしとみなさず、呼び出し側の fail の向き (deny) に倒す。
 

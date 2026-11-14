@@ -672,21 +672,7 @@ fn diff_cases() -> Vec<DiffCase> {
             "+++ b/a.md\n@@ -1,2 +1,2 @@\n-x\n y\n+8.8.8.8\n+++ b/b.md\n@@ -0,0 +1 @@\n+8.8.4.4\n",
             vec![("a.md", 2), ("b.md", 1)],
         ),
-        ("pragma の行だけ飛ばし、次の行は見る", r, "+++ b/f.md\n@@ -0,0 +1,2 @@\n+8.8.8.8 # secret-scan-gate:allow\n+8.8.4.4\n", vec![("f.md", 2)]),
-        (
-            "exempt は差分内のファイルごとに効く",
-            "example/docs",
-            "+++ b/docs/a.md\n@@ -0,0 +1 @@\n+8.8.8.8\n+++ b/src/a.md\n@@ -0,0 +1 @@\n+8.8.8.8\n",
-            vec![("src/a.md", 1)],
-        ),
-    ]
-}
-
-// Rust 側で決めた読み方 (従来の実装と揃えない箇所)。SECRET_SCAN_REFERENCE で従来の実装を当てるときは外す
-fn diff_cases_rust_only() -> Vec<DiffCase> {
-    let r = "example/repo";
-    vec![
-        // hunk の中の `+` 始まりの行は、内容が `++ ` で始まっていても追加行として読む
+        // hunk の中の `+` 始まりの行は、内容が `++ ` で始まっていても追加行として読む (従来の実装も同じ)
         (
             "内容が ++ で始まる追加行を file header と読まず path を保つ",
             r,
@@ -706,11 +692,8 @@ fn diff_cases_rust_only() -> Vec<DiffCase> {
             vec![("f.md", 2)],
         ),
         ("内容が ++ で始まり直後に値が続く行も走査する", r, "+++ b/f.md\n@@ -0,0 +1 @@\n+++8.8.8.8\n", vec![("f.md", 1)]),
-        // git は非 ASCII の path を `"b/docs/\346..."` の形で出す。戻した path で除外を照合し、報告にも戻した名前を使う
-        ("quote された path も戻して除外を効かせる", "example/docs", "+++ \"b/docs/\\346\\227\\245.md\"\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![]),
-        ("quote された path は戻した名前で報告する", r, "+++ \"b/\\346\\227\\245.md\"\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![("日.md", 1)]),
         ("内容が ++ だけの追加行も 1 行として数える", r, "+++ b/f.md\n@@ -0,0 +1,2 @@\n+++\n+8.8.8.8\n", vec![("f.md", 2)]),
-        // git が行を区切るのは `\n` だけ。`\x0c` や U+2028 は行の内容で、hunk の行数の勘定を割らない
+        // git が行を区切るのは `\n` だけ。`\x0c` や U+2028 は行の内容で、hunk の行数の勘定を割らない (従来の実装も同じ)
         (
             "追加行の内容に form feed と +++ /dev/null があっても hunk を早く終わらせない",
             r,
@@ -724,6 +707,23 @@ fn diff_cases_rust_only() -> Vec<DiffCase> {
             vec![("f.md", 10)],
         ),
         ("区切り文字より後ろの値も同じ行として走査する", r, "+++ b/f.md\n@@ -0,0 +1 @@\n+x\x0c8.8.8.8\n", vec![("f.md", 1)]),
+        ("pragma の行だけ飛ばし、次の行は見る", r,"+++ b/f.md\n@@ -0,0 +1,2 @@\n+8.8.8.8 # secret-scan-gate:allow\n+8.8.4.4\n", vec![("f.md", 2)]),
+        (
+            "exempt は差分内のファイルごとに効く",
+            "example/docs",
+            "+++ b/docs/a.md\n@@ -0,0 +1 @@\n+8.8.8.8\n+++ b/src/a.md\n@@ -0,0 +1 @@\n+8.8.8.8\n",
+            vec![("src/a.md", 1)],
+        ),
+    ]
+}
+
+// git の quote path など、従来の実装と読み方が違う箇所。SECRET_SCAN_REFERENCE で従来の実装を当てるときは外す
+fn diff_cases_rust_only() -> Vec<DiffCase> {
+    let r = "example/repo";
+    vec![
+        // git は非 ASCII の path を `"b/docs/\346..."` の形で出す。戻した path で除外を照合し、報告にも戻した名前を使う
+        ("quote された path も戻して除外を効かせる", "example/docs", "+++ \"b/docs/\\346\\227\\245.md\"\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![]),
+        ("quote された path は戻した名前で報告する", r, "+++ \"b/\\346\\227\\245.md\"\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![("日.md", 1)]),
     ]
 }
 
@@ -856,6 +856,21 @@ fn value_not_overlapping_a_credential_is_kept() {
     assert_eq!(out.code, Some(0), "stderr={}", out.stderr);
     assert!(!out.stdout.contains(&pw), "password の全体が出力に残っている: {}", out.stdout);
     assert!(out.stdout.contains("8.8.8.8"), "重ならない検出の値まで伏せている: {}", out.stdout);
+}
+
+// 重なりの範囲は credential の一致全体。一致が host まで含む jdbc では host の識別子の値も伏せる (検出は残る)
+#[test]
+fn value_inside_a_credential_match_is_masked_even_for_the_host() {
+    if reference_mode() {
+        return;
+    }
+    let t = Tmp::new();
+    let p = t.file("policy.json", &policy_json().to_string());
+    let pw = gen(ALNUM, 12, 414);
+    let out = scan(&p, "example/repo", &format!("+++ b/f.md\n@@ -0,0 +1 @@\n+url=jdbc:postgresql://8.8.8.8:5432/app?password={pw}\n"));
+    assert_eq!(out.code, Some(0), "stderr={}", out.stderr);
+    assert!(out.stdout.contains(r#""class":"net-ipv4""#), "host の検出が消えている: {}", out.stdout);
+    assert!(!out.stdout.contains("8.8.8.8"), "credential の一致に含まれる host の値が残っている: {}", out.stdout);
 }
 
 // stdin を読めないときは、途中までの走査を完全な走査に見せず exit 2
