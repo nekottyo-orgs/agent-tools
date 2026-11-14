@@ -3,7 +3,9 @@
 #       private key を repository secret の APP_PRIVATE_KEY に置く。
 #       App の権限は Contents / Pull requests を Read and write、Issues を Read-only 以上にする。
 # release PR と tag を App の token で作るのは、GITHUB_TOKEN の操作では後続の workflow が動かないため。
-# action は supply chain 対策で tag でなく commit SHA で固定する。
+# action は supply chain 対策で .github/workflows/actions.lock に固定する (gh actions-lock で更新)。
+# uses は tag 表記で書く。lockfile が commit と repo の identity (owner_id / repo_id) を固定するので SHA の直書きは要らない。
+# 更新と検証: gh actions-lock / gh actions-lock --verify-local
 name: tagpr
 
 on:
@@ -18,9 +20,8 @@ jobs:
   bash-gates:
     runs-on: ubuntu-latest
     steps:
-      # actions/create-github-app-token v3.3.0
       # app-id は非推奨 (deprecationMessage: "Use 'client-id' instead.") なので client-id を使う
-      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
+      - uses: actions/create-github-app-token@v3.3.0
         id: app-token
         with:
           client-id: ${{ vars.APP_CLIENT_ID }}
@@ -28,12 +29,10 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-issues: read
-      # actions/checkout v6
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/checkout@v6.1.0
         with:
           persist-credentials: false
-      # Songmu/tagpr v1.22.0
-      - uses: Songmu/tagpr@047aec4b6c0ce166f52958b5a97f5a3d927fd65b
+      - uses: Songmu/tagpr@v1.22.0
         with:
           config: bash-gates/.tagpr
         env:

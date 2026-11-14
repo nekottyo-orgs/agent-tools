@@ -1,5 +1,6 @@
 # bash-gates/ の build と回帰テスト。tool ごとに workflow を分け、path filter で他の tool の変更では走らせない。
 # toolchain の version (Rust 1.98 / Lean v4.35.0 / elan v4.2.4) は手元の検証と同じ値に固定する。elan は release asset の sha256 でも固定する。
+# action は .github/workflows/actions.lock に固定する (gh actions-lock で更新)。uses を tag 表記で書くのは、lockfile が commit と repo の identity を固定するため。
 name: bash-gates
 
 on:
@@ -19,7 +20,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust
         run: rustup toolchain install 1.98 --profile minimal && rustup default 1.98
