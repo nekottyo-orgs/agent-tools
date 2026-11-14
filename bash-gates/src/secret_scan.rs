@@ -8,8 +8,8 @@
 //     そのための判定はルール表 (secret_rules.rs) 側に置く
 //   - 検査するのは追加行のみ。既に commit 済みの識別子を毎回撃つと、対象 repo の
 //     commit が恒久的に deny されて初日で破綻する
-//   - 差分検証で Python 実装と一致させるため、Python 実装の癖もそのまま再現する
-//     (行内容が `++ ` で始まる追加行を `+++ ` ヘッダと誤認する、など)
+//   - hunk の残り行数を数えて追加行を読む。内容が `++ ` で始まる追加行を file header と
+//     取り違えると、以降の走査や除外の判定を内容で外させられる (fail-open)
 //   - 正規表現の先読み・後読みが探索上限で Err になったときは、見落とさないよう検出側に倒す
 //     (値は `…`)。fancy-regex は Python の re と違い、上限超過を結果でなく Err で返す
 //   - policy の形が想定と違うときは黙って通さず exit 2 にする。素通りは fail-open になる
@@ -259,13 +259,48 @@ fn new_start(header: &str) -> u64 {
         .unwrap_or(0)
 }
 
+// `@@ -a,b +c,d @@` の (b, d)。`,` が無い側は 1 行。読めなければ (0, 0) で、hunk の外として扱う
+fn hunk_counts(header: &str) -> (u64, u64) {
+    let (mut old, mut new) = (None, None);
+    for tok in header.split_ascii_whitespace().skip(1).take_while(|t| *t != "@@") {
+        let (slot, rest) = match (tok.strip_prefix('-'), tok.strip_prefix('+')) {
+            (Some(r), _) => (&mut old, r),
+            (_, Some(r)) => (&mut new, r),
+            _ => continue,
+        };
+        if slot.is_none() {
+            *slot = match rest.split_once(',') {
+                Some((_, n)) => n.parse::<u64>().ok(),
+                None => rest.parse::<u64>().ok().map(|_| 1),
+            };
+        }
+    }
+    (old.unwrap_or(0), new.unwrap_or(0))
+}
+
 /// unified diff から (パス, 行番号, 行内容) を追加行だけ取り出す。
+///
+/// hunk の残り行数を数え、hunk の中の `+` 始まりの行は内容に関わらず追加行として読む。
+/// 内容が `++ ` で始まる行を file header と取り違えて、以降の走査や除外の判定を外させないため
 fn added_lines(diff: &str) -> Vec<(String, u64, &str)> {
     let mut out = Vec::new();
     let mut path: Option<String> = None;
     let mut lineno: u64 = 0;
+    let (mut rem_old, mut rem_new) = (0u64, 0u64);
     for raw in splitlines(diff) {
-        if let Some(rest) = raw.strip_prefix("+++ ") {
+        let in_hunk = rem_old > 0 || rem_new > 0;
+        if in_hunk && raw.starts_with('+') {
+            rem_new = rem_new.saturating_sub(1);
+            if let Some(p) = &path {
+                out.push((p.clone(), lineno, &raw[1..]));
+            }
+            lineno = lineno.saturating_add(1);
+        } else if in_hunk && raw.starts_with('-') {
+            rem_old = rem_old.saturating_sub(1);
+        } else if in_hunk && raw.starts_with(' ') {
+            rem_old = rem_old.saturating_sub(1);
+            rem_new = rem_new.saturating_sub(1);
+        } else if let Some(rest) = raw.strip_prefix("+++ ") {
             let target = py_strip(rest);
             // `+++ b/path` の b/ を剥がす。/dev/null は削除なので追跡しない
             path = (target != "/dev/null").then(|| {
@@ -273,6 +308,7 @@ fn added_lines(diff: &str) -> Vec<(String, u64, &str)> {
             });
         } else if raw.starts_with("@@") {
             lineno = new_start(raw);
+            (rem_old, rem_new) = hunk_counts(raw);
         } else if raw.starts_with('+') && !raw.starts_with("+++") {
             if let Some(p) = &path {
                 out.push((p.clone(), lineno, &raw[1..]));
@@ -466,7 +502,7 @@ mod tests {
 
     #[test]
     fn added_lines_は_path_と行番号を追う() {
-        let diff = "diff --git a/f b/f\n--- a/f\n+++ b/dir/f.txt\n@@ -1,0 +5,2 @@\n+one\n+two\n@@ -9 +20 @@\n+three\n+++ /dev/null\n@@ -1 +1 @@\n+gone\n";
+        let diff = "diff --git a/f b/f\n--- a/f\n+++ b/dir/f.txt\n@@ -1,0 +5,2 @@\n+one\n+two\n@@ -9 +20 @@\n-nine\n+three\n+++ /dev/null\n@@ -1 +1 @@\n-a\n+gone\n";
         let got = added_lines(diff);
         assert_eq!(
             got,

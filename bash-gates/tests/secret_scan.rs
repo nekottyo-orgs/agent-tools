@@ -32,7 +32,7 @@ fn reference_mode() -> bool {
     std::env::var_os("SECRET_SCAN_REFERENCE").is_some()
 }
 
-fn run_cli(args: &[&str], stdin: &str) -> Out {
+fn run_cli(args: &[&str], stdin: impl AsRef<[u8]>) -> Out {
     let mut cmd = match std::env::var_os("SECRET_SCAN_REFERENCE") {
         Some(p) => Command::new(p),
         None => Command::new(env!("CARGO_BIN_EXE_bash-gates")),
@@ -46,7 +46,7 @@ fn run_cli(args: &[&str], stdin: &str) -> Out {
         .spawn()
         .expect("起動に失敗");
     // 引数不正で stdin を読まずに終わっても BrokenPipe で test を落とさない
-    let _ = child.stdin.take().expect("stdin").write_all(stdin.as_bytes());
+    let _ = child.stdin.take().expect("stdin").write_all(stdin.as_ref());
     let o = child.wait_with_output().expect("待機に失敗");
     Out {
         code: o.status.code(),
@@ -55,7 +55,7 @@ fn run_cli(args: &[&str], stdin: &str) -> Out {
     }
 }
 
-fn scan(policy: &Path, repo: &str, stdin: &str) -> Out {
+fn scan(policy: &Path, repo: &str, stdin: impl AsRef<[u8]>) -> Out {
     run_cli(&["--policy", policy.to_str().unwrap(), "--repo", repo], stdin)
 }
 
@@ -372,6 +372,8 @@ mod cloud_credential {
             c("文書用アカウント ID (低多様性)", "arn:aws:iam::111122223333:role/x", "none"),
             c("アカウント ID の無い ARN", "arn:aws:iam::aws:policy/ReadOnlyAccess", "none"),
             c("GUID (tenant/client id)", format!(r#"tenant_id = "{}""#, guid(81)), "none"),
+            c("Azure SAS: core.windows.net が無くても sv= があれば撃つ", format!("https://x.example.net/c/b?sv=2021-06-08&sig={sig}"), "azure-sas"),
+            c("Azure SAS: sv= が無くても core.windows.net があれば撃つ", format!("https://x.blob.core.windows.net/c/b?sig={sig}"), "azure-sas"),
             c("Azure SAS: sv= も core.windows.net も無い sig= は撃たない", format!("https://api.fixture-corp.io/x?sig={sig}"), "none"),
             c("GCP SA JSON: type が service_account 以外は撃たない", r#"  "type": "authorized_user","#, "none"),
         ]
@@ -663,14 +665,34 @@ fn diff_cases() -> Vec<DiffCase> {
         ),
         ("hunk ごとに行番号を取り直す", r, "+++ b/f.md\n@@ -1,0 +5,2 @@\n+x\n+8.8.8.8\n@@ -9 +20 @@\n+8.8.4.4\n", vec![("f.md", 6), ("f.md", 20)]),
         ("hunk が無ければ行番号は 0 から数える", r, "+++ b/f.md\n+x\n+8.8.8.8\n", vec![("f.md", 1)]),
-        // Python 実装の癖 (内容が `++ ` で始まる追加行は +++ ヘッダと誤認して path が切り替わる) はそのまま再現が仕様
+        // hunk の中の `+` 始まりの行は、内容が `++ ` で始まっていても追加行として読む
         (
-            "内容が ++ で始まる追加行を +++ ヘッダと誤認する癖",
+            "内容が ++ で始まる追加行を file header と読まず path を保つ",
             r,
-            "+++ b/f.md\n@@ -0,0 +1,2 @@\n+8.8.8.8\n+++ b/other.md\n+8.8.4.4\n",
-            vec![("f.md", 1), ("other.md", 2)],
+            "+++ b/f.md\n@@ -0,0 +1,3 @@\n+8.8.8.8\n+++ b/other.md\n+8.8.4.4\n",
+            vec![("f.md", 1), ("f.md", 3)],
         ),
-        ("内容が ++ だけの追加行は無視され行番号も進まない", r, "+++ b/f.md\n@@ -0,0 +1 @@\n+++\n+8.8.8.8\n", vec![("f.md", 1)]),
+        (
+            "内容が ++ /dev/null の行の後も走査を続ける",
+            r,
+            "+++ b/f.md\n@@ -0,0 +1,3 @@\n+++ /dev/null\n+8.8.8.8\n+8.8.4.4\n",
+            vec![("f.md", 2), ("f.md", 3)],
+        ),
+        (
+            "内容が ++ で始まる行で別 file の除外に切り替わらない",
+            "example/docs",
+            "+++ b/f.md\n@@ -0,0 +1,2 @@\n+++ b/docs/x\n+8.8.8.8\n",
+            vec![("f.md", 2)],
+        ),
+        ("内容が ++ で始まり直後に値が続く行も走査する", r, "+++ b/f.md\n@@ -0,0 +1 @@\n+++8.8.8.8\n", vec![("f.md", 1)]),
+        ("内容が ++ だけの追加行も 1 行として数える", r, "+++ b/f.md\n@@ -0,0 +1,2 @@\n+++\n+8.8.8.8\n", vec![("f.md", 2)]),
+        ("hunk が終わった後の +++ は file header として読む", r, "+++ b/a.md\n@@ -0,0 +1 @@\n+x\n+++ b/b.md\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![("b.md", 1)]),
+        (
+            "削除行と文脈行も数えて hunk の終わりを決める (行番号は --unified=0 の出力を前提に文脈行で進めない)",
+            r,
+            "+++ b/a.md\n@@ -1,2 +1,2 @@\n-x\n y\n+8.8.8.8\n+++ b/b.md\n@@ -0,0 +1 @@\n+8.8.4.4\n",
+            vec![("a.md", 1), ("b.md", 1)],
+        ),
         ("pragma の行だけ飛ばし、次の行は見る", r, "+++ b/f.md\n@@ -0,0 +1,2 @@\n+8.8.8.8 # secret-scan-gate:allow\n+8.8.4.4\n", vec![("f.md", 2)]),
         (
             "exempt は差分内のファイルごとに効く",
@@ -689,6 +711,24 @@ fn diff_reading_nothing_to_report() {
 #[test]
 fn diff_reading_reports_file_and_line() {
     diff_ng(&diff_cases(), true);
+}
+
+// 不正な UTF-8 は lossy に変換して走査を続ける。従来の実装は例外終了するので、契約として決めた Rust 側だけを見る
+#[test]
+fn invalid_utf8_is_scanned_lossily() {
+    if reference_mode() {
+        return;
+    }
+    let t = Tmp::new();
+    let policy = t.file("policy.json", &policy_json().to_string());
+    let out = scan(&policy, "example/repo", b"+++ b/f.md\n@@ -0,0 +1,2 @@\n+\xff\xfe junk\n+8.8.8.8\n".as_slice());
+    assert_eq!(out.code, Some(0), "stderr={}", out.stderr);
+    let got: Vec<(String, u64)> = findings(&out)
+        .expect("JSON")
+        .iter()
+        .map(|x| (x["file"].as_str().unwrap_or("?").to_string(), x["line"].as_u64().unwrap_or(u64::MAX)))
+        .collect();
+    assert_eq!(got, vec![("f.md".to_string(), 2)]);
 }
 
 // ---------------------------------------------------------------------------

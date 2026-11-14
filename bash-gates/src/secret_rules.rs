@@ -196,7 +196,7 @@ fn check_email(local: &str, domain: &str, rest: &str) -> bool {
     if l.starts_with("noreply") || l.starts_with("no-reply") || l.starts_with("donotreply") || l.starts_with("do-not-reply") {
         return false;
     }
-    // 1 文字 local + 1 文字ラベルの組は実アドレスとして事実上あり得ない
+    // local も先頭ラベルも 2 文字以下の組 (ab@cd.io など) は実アドレスとして事実上あり得ない
     !(local.chars().count() < 3 && domain_lower.split('.').next().unwrap_or("").chars().count() < 3)
 }
 

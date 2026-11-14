@@ -80,7 +80,7 @@ BIN="$TOOL_ROOT/target/release/bash-gates"
 
 # 0. 関数単位で Lean のモデル (lean/BashGates.lean) と一致する。表は lean/vectors.txt、比べるのは main.rs の #[cfg(test)]
 "$CARGO" test --release --offline --quiet --manifest-path "$TOOL_ROOT/Cargo.toml" >/dev/null 2>&1
-assert_eq 0 "$?" "0. cargo test (Lean のモデルとの突き合わせ) が通る"
+assert_eq 0 "$?" "0. cargo test (Lean のモデルとの突き合わせと secret-scan) が通る"
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
