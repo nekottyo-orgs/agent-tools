@@ -97,11 +97,12 @@ jobs:
         run: |
           state=
           for _ in $(seq 1 30); do
-            state=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
+            state=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>"$RUNNER_TEMP/gh-err") || true
             if [ -n "$state" ]; then break; fi
             sleep 10
           done
-          test "$state" = true || { echo "release $TAG is not a draft (isDraft: ${state:-not found})" >&2; exit 1; }
+          # 認証・権限・rate limit の失敗も「まだ無い」と同じ空の state になるので、最後の stderr を残して切り分けられるようにする
+          test "$state" = true || { cat "$RUNNER_TEMP/gh-err" >&2; echo "release $TAG is not a draft (isDraft: ${state:-not found})" >&2; exit 1; }
 
       # draft は公開前で asset を差し替えられるので --clobber を付ける。途中で失敗した run の再実行で、残った asset を置き換える
       # 4 ファイルは 1 回の run の build から出たもので、公開までに混ざらない
