@@ -17,7 +17,7 @@
 //
 // 使い方: git diff --cached --unified=0 | bash-gates secret-scan --policy <path> --repo owner/name
 //
-// 終了コード: 0 = 走査完了 (検出の有無は stdout の JSON)。2 = 引数不正・policy 読み込み失敗 (呼び出し側は fail-close で扱う)
+// 終了コード: 0 = 走査完了 (検出の有無は stdout の JSON)。2 = 引数不正・policy 読み込み失敗・stdin の読み取り失敗 (呼び出し側は fail-close で扱う)
 
 use crate::secret_rules;
 use serde_json::{json, Map, Value};
@@ -187,14 +187,59 @@ fn is_exempt(exempts: &[Exempt], path: &str, cls: &str, rule: &str) -> bool {
     })
 }
 
-fn mask(cls: &str, value: &str) -> String {
-    if !MASKED_CLASSES.contains(&cls) {
-        return value.to_string();
-    }
+fn mask_prefix(value: &str) -> String {
     match value.char_indices().nth(6) {
         Some((i, _)) => format!("{}…", &value[..i]),
         None => "…".to_string(),
     }
+}
+
+fn mask(cls: &str, value: &str) -> String {
+    if MASKED_CLASSES.contains(&cls) {
+        mask_prefix(value)
+    } else {
+        value.to_string()
+    }
+}
+
+// git は特殊な文字を含む path を `"..."` で囲み、C の escape と 8 進の byte で書く (`core.quotePath`)。
+// 除外の照合と報告に使う path は、これを戻した実際の file 名にする
+fn unquote_git_path(s: &str) -> String {
+    let Some(inner) = s.strip_prefix('"').and_then(|r| r.strip_suffix('"')) else {
+        return s.to_string();
+    };
+    let b = inner.as_bytes();
+    let (mut out, mut i) = (Vec::with_capacity(b.len()), 0);
+    while i < b.len() {
+        if b[i] != b'\\' || i + 1 >= b.len() {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        let c = b[i + 1];
+        let simple = match c {
+            b'a' => Some(7),
+            b'b' => Some(8),
+            b'f' => Some(12),
+            b'n' => Some(b'\n'),
+            b'r' => Some(b'\r'),
+            b't' => Some(b'\t'),
+            b'v' => Some(11),
+            b'"' | b'\\' => Some(c),
+            _ => None,
+        };
+        if let Some(v) = simple {
+            out.push(v);
+            i += 2;
+        } else if (b'0'..=b'3').contains(&c) && i + 3 < b.len() && b[i + 2..i + 4].iter().all(|d| (b'0'..=b'7').contains(d)) {
+            out.push((c - b'0') * 64 + (b[i + 2] - b'0') * 8 + (b[i + 3] - b'0'));
+            i += 4;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 // 和は文字の初出順に取る。浮動小数の和は順序で丸めが変わり、Python 実装 (dict の挿入順) と
@@ -301,7 +346,8 @@ fn added_lines(diff: &str) -> Vec<(String, u64, &str)> {
             rem_old = rem_old.saturating_sub(1);
             rem_new = rem_new.saturating_sub(1);
         } else if let Some(rest) = raw.strip_prefix("+++ ") {
-            let target = py_strip(rest);
+            let target = unquote_git_path(py_strip(rest));
+            let target = target.as_str();
             // `+++ b/path` の b/ を剥がす。/dev/null は削除なので追跡しない
             path = (target != "/dev/null").then(|| {
                 target.strip_prefix("a/").or_else(|| target.strip_prefix("b/")).unwrap_or(target).to_string()
@@ -402,7 +448,11 @@ pub fn run(args: Vec<String>) -> i32 {
     let rules = secret_rules::build(&entropy);
 
     let mut input = Vec::new();
-    let _ = std::io::stdin().read_to_end(&mut input);
+    if let Err(e) = std::io::stdin().read_to_end(&mut input) {
+        // 読めた分だけ走査して scanned:true を返すと、途中までの走査が完全な走査に見える
+        eprintln!("failed to read stdin: {e}");
+        return 2;
+    }
     // 不正な UTF-8 を含む diff (バイナリ混じり、他 encoding) でも落とさず走査する
     let diff = String::from_utf8_lossy(&input);
 
@@ -411,28 +461,45 @@ pub fn run(args: Vec<String>) -> i32 {
         if content.contains(PRAGMA) {
             continue;
         }
+        // (rule, 値, 一致の範囲)。範囲を取るのは、別 class の検出が credential の一致に重なるときに値を伏せるため
+        let mut hits: Vec<(&secret_rules::Rule, String, Option<(usize, usize)>)> = Vec::new();
         for r in &rules {
             for caps in r.re.captures_iter(content) {
-                let (value, failed) = match &caps {
+                let (value, span, failed) = match &caps {
                     Ok(c) => match (r.check)(c, content) {
-                        Some(v) => (v, false),
+                        Some(v) => (v, c.get(0).map(|m| (m.start(), m.end())), false),
                         None => continue,
                     },
-                    Err(_) => ("…".to_string(), true),
+                    Err(_) => ("…".to_string(), None, true),
                 };
-                if !is_exempt(&exempts, &path, r.class, r.id) {
-                    findings.push(json!({
-                        "file": path,
-                        "line": lineno,
-                        "class": r.class,
-                        "rule": r.id,
-                        "value": mask(r.class, &value),
-                    }));
-                }
+                hits.push((r, value, span));
                 if failed {
                     break;
                 }
             }
+        }
+        // 例: DB の接続文字列の password をメールの形として拾った検出は、password の全体を報告に出さない
+        // 秘密の範囲は一致全体でなく値の位置。接続文字列の host まで伏せると、別 class の検出の手掛かりが消える
+        let secret_spans: Vec<(usize, usize)> = hits
+            .iter()
+            .filter(|(r, _, _)| MASKED_CLASSES.contains(&r.class))
+            .filter_map(|(_, v, s)| {
+                let (a, b) = (*s)?;
+                Some(content[a..b].find(v.as_str()).map_or((a, b), |off| (a + off, a + off + v.len())))
+            })
+            .collect();
+        for (r, value, span) in hits {
+            if is_exempt(&exempts, &path, r.class, r.id) {
+                continue;
+            }
+            let overlaps = span.is_some_and(|(a, b)| secret_spans.iter().any(|&(x, y)| a < y && x < b));
+            findings.push(json!({
+                "file": path,
+                "line": lineno,
+                "class": r.class,
+                "rule": r.id,
+                "value": if overlaps { mask_prefix(&value) } else { mask(r.class, &value) },
+            }));
         }
     }
     emit(&json!({"findings": findings, "scanned": true}));

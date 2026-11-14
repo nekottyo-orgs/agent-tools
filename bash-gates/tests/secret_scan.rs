@@ -685,6 +685,9 @@ fn diff_cases() -> Vec<DiffCase> {
             vec![("f.md", 2)],
         ),
         ("内容が ++ で始まり直後に値が続く行も走査する", r, "+++ b/f.md\n@@ -0,0 +1 @@\n+++8.8.8.8\n", vec![("f.md", 1)]),
+        // git は非 ASCII の path を `"b/docs/\346..."` の形で出す。戻した path で除外を照合し、報告にも戻した名前を使う
+        ("quote された path も戻して除外を効かせる", "example/docs", "+++ \"b/docs/\\346\\227\\245.md\"\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![]),
+        ("quote された path は戻した名前で報告する", r, "+++ \"b/\\346\\227\\245.md\"\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![("日.md", 1)]),
         ("内容が ++ だけの追加行も 1 行として数える", r, "+++ b/f.md\n@@ -0,0 +1,2 @@\n+++\n+8.8.8.8\n", vec![("f.md", 2)]),
         ("hunk が終わった後の +++ は file header として読む", r, "+++ b/a.md\n@@ -0,0 +1 @@\n+x\n+++ b/b.md\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![("b.md", 1)]),
         (
@@ -781,6 +784,38 @@ fn credential_values_are_masked() {
         }
     }
     assert!(ng.is_empty(), "{} 件失敗\n{}", ng.len(), ng.join("\n"));
+}
+
+// DB の接続文字列の password を別 class (メール) の検出が拾っても、値は伏せる。従来の実装は全文を返す
+#[test]
+fn value_overlapping_a_credential_is_masked() {
+    if reference_mode() {
+        return;
+    }
+    let t = Tmp::new();
+    let p = t.file("policy.json", &policy_json().to_string());
+    let pw = gen(ALNUM, 12, 411);
+    let out = scan(&p, "example/repo", &format!("+++ b/f.md\n@@ -0,0 +1 @@\n+DSN=postgres://appuser:{pw}@db.corp.io/app\n"));
+    assert_eq!(out.code, Some(0), "stderr={}", out.stderr);
+    assert!(!out.stdout.contains(&pw), "password の全体が出力に残っている: {}", out.stdout);
+    assert!(findings(&out).is_some_and(|f| !f.is_empty()), "検出なし: {}", out.stdout);
+}
+
+// stdin を読めないときは、途中までの走査を完全な走査に見せず exit 2
+#[test]
+fn unreadable_stdin_exits_2() {
+    if reference_mode() {
+        return;
+    }
+    let t = Tmp::new();
+    let p = t.file("policy.json", &policy_json().to_string());
+    let dir = std::fs::File::open(std::env::temp_dir()).expect("directory を開けない");
+    let o = Command::new(env!("CARGO_BIN_EXE_bash-gates"))
+        .args(["secret-scan", "--policy", p.to_str().unwrap(), "--repo", "example/repo"])
+        .stdin(Stdio::from(dir))
+        .output()
+        .expect("起動に失敗");
+    assert_eq!(o.status.code(), Some(2), "stdout={}", String::from_utf8_lossy(&o.stdout));
 }
 
 #[test]

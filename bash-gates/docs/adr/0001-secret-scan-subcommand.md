@@ -16,10 +16,11 @@ commit と投稿の gate が使う secret 検出器は、Python 3 の単体 scri
 
 - stdin に `git diff --unified=0` 形の unified diff を渡す。検査するのは追加行だけ
   - `@@ -a,b +c,d @@` の行数を数え、hunk の中の `+` 始まりの行は、内容が `++ ` で始まっていても追加行として読む。hunk の外の `+++ ` だけを file header とみなす
+  - git が quote した path (`"b/docs/\346..."`) は戻した実際の file 名で、除外の照合と報告に使う
   - 行に `secret-scan-gate:allow` を含む追加行は、全ルールの対象から外す (行内の除外)
 - stdout に `{"findings":[{"file","line","class","rule","value"}],"scanned":bool}` を返す。`scanned` が false のときは、policy に載っていない (または null の) repo
-- exit 0 は走査完了 (検出の有無は stdout を見る)、exit 2 は引数または対象 repo の policy の不正
-- credential 系の `value` は、7 文字以上なら先頭 6 文字と `…`、6 文字以下なら `…` だけを返し、検出した秘密の全体を報告に再掲しない
+- exit 0 は走査完了 (検出の有無は stdout を見る)、exit 2 は引数・対象 repo の policy の不正、または stdin の読み取り失敗
+- credential 系の `value` は、7 文字以上なら先頭 6 文字と `…`、6 文字以下なら `…` だけを返し、検出した秘密の全体を報告に再掲しない。credential の一致に重なる別 class の検出 (接続文字列の password をメールの形として拾う、など) も同じく伏せる
 
 呼び出し側は、`scanned` が true で `findings` が配列のときだけ結果を信用する。subcommand を持たない古い binary は、exit 0 で stdout が空になる。その場合も検出なしとみなさず、呼び出し側の fail の向き (deny) に倒す。
 
@@ -67,11 +68,13 @@ binary と public repo が持つのは、vendor 共通の形のルールだけ�
 ## 検証
 
 - 従来の Python 実装と同じ入力に当て、出力 (JSON を正規化したもの) と exit code を比べた
-  - 約 10 万ケース (801 file)。779 file が一致し、22 file は意図した差 (下記)。全 35 ルールと、各ルールの境界値・文字種の変異・diff の形・policy の除外を含む。値はすべて実行時に連結して作った合成値
-  - 差の 22 file は次の 3 つ
+  - 約 10 万ケース (801 file)。607 file が一致し、194 file は意図した差 (下記)。全 35 ルールと、各ルールの境界値・文字種の変異・diff の形・policy の除外を含む。値はすべて実行時に連結して作った合成値
+  - 差の 194 file は次の 5 つ
+    - 別 class の検出が credential の値に重なり、値が伏せられる入力 (171 file)。検出の有無・位置・rule は同じで、`value` だけが違う
     - hunk header に Unicode の数字や u64 に収まらない大きさの数字がある入力 (5 file)。行番号だけが違う
     - 不正な UTF-8 (4 file)
     - 追加行の内容が `++` で始まる入力 (13 file)。Rust 側は追加行として走査する
+    - git が quote した path (1 file)。Rust 側は戻した file 名を使う
   - IPv4 / IPv6 の予約レンジの境界値は、約 41 万行 (約 20 万のアドレスを複数の表記で) で全一致
 - `cargo test` に、検出ルールごとの「止める / 止めない」の table 駆動 test (`tests/secret_scan.rs`) を置く
 - 1 回の実行時間 (追加 2 行の diff): Python 約 29 ms、Rust 約 5.7 ms。追加 200 行の diff では Python 約 31 ms、Rust 約 9.7 ms
