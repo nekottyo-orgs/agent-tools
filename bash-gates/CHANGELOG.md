@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.1.2](https://github.com/nekottyo/agent-tools/compare/bash-gates/v0.1.1...bash-gates/v0.1.2) - 2026-11-14
+
+### Changes
+- feat(bash-gates): secret-scan を subcommand に足す by @nekottyo in https://github.com/nekottyo/agent-tools/pull/8
+
 ## [v0.1.1](https://github.com/nekottyo/agent-tools/compare/bash-gates/v0.1.0...bash-gates/v0.1.1) - 2026-11-14
 
 ### Changes
