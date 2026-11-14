@@ -77,4 +77,4 @@ binary と public repo が持つのは、vendor 共通の形のルールだけ�
     - git が quote した path (1 file)。Rust 側は戻した file 名を使う
   - IPv4 / IPv6 の予約レンジの境界値は、約 41 万行 (約 20 万のアドレスを複数の表記で) で全一致
 - `cargo test` に、検出ルールごとの「止める / 止めない」の table 駆動 test (`tests/secret_scan.rs`) を置く
-- 1 回の実行時間 (追加 2 行の diff): Python 約 29 ms、Rust 約 5.7 ms。追加 200 行の diff では Python 約 31 ms、Rust 約 9.7 ms
+- 1 回の実行時間 (追加 2 行の diff): Python 約 32 ms、Rust 約 8.5 ms。追加 200 行の diff では Python 約 34〜41 ms、Rust 約 10〜13 ms (Python は 3.14。100 回の平均を 2 回測った範囲)

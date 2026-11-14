@@ -1,7 +1,8 @@
 // 目的: git の unified diff を stdin で受け、commit される追加行から実環境の識別子と
 //       credential を検出して JSON で返す (`bash-gates secret-scan` subcommand)。
 //       判定と deny は呼び出し側 (シェル) の責務で、ここは「何がどこで見つかったか」だけを返す。
-//       hooks/_shared/secret-scan.py の Rust 移植で、出力は JSON として同値になるようにする。
+//       hooks/_shared/secret-scan.py の Rust 移植で、検出の有無・位置・rule が揃うようにする。
+//       揃えない箇所 (value の伏せ字、`++` で始まる追加行など) は ADR 0001 に載せている。
 //
 // 安全設計 (why):
 //   - 誤検知は除外リストでなく構造で潰す。撃つ gate は無視される gate になるため。
