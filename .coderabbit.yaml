@@ -1,3 +1,7 @@
 reviews:
   auto_review:
     drafts: true
+  # 指摘ありなら REQUEST_CHANGES、解消して最新 commit を review 済みなら APPROVE を GitHub の review として付ける。
+  # request_changes_workflow は deprecated な旧名なので使わない
+  auto_approvals:
+    enabled: true
