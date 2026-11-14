@@ -333,6 +333,7 @@ fn added_lines(diff: &str) -> Vec<(String, u64, &str)> {
         } else if in_hunk && raw.starts_with(' ') {
             rem_old = rem_old.saturating_sub(1);
             rem_new = rem_new.saturating_sub(1);
+            lineno = lineno.saturating_add(1);
         } else if let Some(rest) = raw.strip_prefix("+++ ") {
             // git は空白を含む path の後ろに tab を足す。取り除くのはその区切りだけで、path の空白は残す
             // (除外の照合で、末尾に空白のある別 file が除外 path と同じ扱いにならないように)
@@ -481,8 +482,9 @@ pub fn run(args: Vec<String>) -> i32 {
             if is_exempt(&exempts, &path, r.class, r.id) {
                 continue;
             }
-            // 自分自身の一致は数えない (credential の値は mask の先頭 6 文字の扱いに任せる)
-            let overlaps = span.is_some_and(|(a, b)| secret_spans.iter().any(|&(j, (x, y))| j != i && a < y && x < b));
+            // credential 系の検出は mask が先頭 6 文字に絞るので、重なりでは数えない。別 class の検出だけが対象
+            let overlaps = !MASKED_CLASSES.contains(&r.class)
+                && span.is_some_and(|(a, b)| secret_spans.iter().any(|&(j, (x, y))| j != i && a < y && x < b));
             findings.push(json!({
                 "file": path,
                 "line": lineno,
