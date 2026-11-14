@@ -280,11 +280,6 @@ fn diff_lines(s: &str) -> Vec<&str> {
     lines
 }
 
-// Python の str.strip() は `\x1c`-`\x1f` も空白とみなすが、Rust の trim は含まない
-fn py_strip(s: &str) -> &str {
-    s.trim_matches(|c: char| c.is_whitespace() || ('\x1c'..='\x1f').contains(&c))
-}
-
 // `@@ -a,b +c,d @@` の `+` の直後の数字列。Python の `\d` は Unicode の数字も取るが、
 // git が出す hunk header は ASCII だけなので ASCII に限る
 fn new_start(header: &str) -> u64 {
@@ -339,10 +334,12 @@ fn added_lines(diff: &str) -> Vec<(String, u64, &str)> {
             rem_old = rem_old.saturating_sub(1);
             rem_new = rem_new.saturating_sub(1);
         } else if let Some(rest) = raw.strip_prefix("+++ ") {
-            let target = unquote_git_path(py_strip(rest));
+            // git は空白を含む path の後ろに tab を足す。取り除くのはその区切りだけで、path の空白は残す
+            // (除外の照合で、末尾に空白のある別 file が除外 path と同じ扱いにならないように)
+            let target = unquote_git_path(rest.split('\t').next().unwrap_or(rest));
             let target = target.as_str();
             // `+++ b/path` の b/ を剥がす。/dev/null は削除なので追跡しない
-            path = (target != "/dev/null").then(|| {
+            path = (target.trim_end() != "/dev/null").then(|| {
                 target.strip_prefix("a/").or_else(|| target.strip_prefix("b/")).unwrap_or(target).to_string()
             });
         } else if raw.starts_with("@@") {
@@ -471,27 +468,27 @@ pub fn run(args: Vec<String>) -> i32 {
                 }
             }
         }
-        // 例: DB の接続文字列の password をメールの形として拾った検出は、password の全体を報告に出さない
-        // 秘密の範囲は一致全体でなく値の位置。接続文字列の host まで伏せると、別 class の検出の手掛かりが消える
-        let secret_spans: Vec<(usize, usize)> = hits
+        // 例: DB の接続文字列の password をメールの形として拾った検出は、password の一部も報告に出さない。
+        // 秘密の範囲は credential の一致全体にする。値だけの位置を一致の中から探すと、
+        // 同じ文字列が user 名などに先に現れたとき別の場所を指すため
+        let secret_spans: Vec<(usize, (usize, usize))> = hits
             .iter()
-            .filter(|(r, _, _)| MASKED_CLASSES.contains(&r.class))
-            .filter_map(|(_, v, s)| {
-                let (a, b) = (*s)?;
-                Some(content[a..b].find(v.as_str()).map_or((a, b), |off| (a + off, a + off + v.len())))
-            })
+            .enumerate()
+            .filter(|(_, (r, _, _))| MASKED_CLASSES.contains(&r.class))
+            .filter_map(|(i, (_, _, s))| Some((i, (*s)?)))
             .collect();
-        for (r, value, span) in hits {
+        for (i, (r, value, span)) in hits.into_iter().enumerate() {
             if is_exempt(&exempts, &path, r.class, r.id) {
                 continue;
             }
-            let overlaps = span.is_some_and(|(a, b)| secret_spans.iter().any(|&(x, y)| a < y && x < b));
+            // 自分自身の一致は数えない (credential の値は mask の先頭 6 文字の扱いに任せる)
+            let overlaps = span.is_some_and(|(a, b)| secret_spans.iter().any(|&(j, (x, y))| j != i && a < y && x < b));
             findings.push(json!({
                 "file": path,
                 "line": lineno,
                 "class": r.class,
                 "rule": r.id,
-                "value": if overlaps { mask_prefix(&value) } else { mask(r.class, &value) },
+                "value": if overlaps { "…".to_string() } else { mask(r.class, &value) },
             }));
         }
     }
@@ -514,6 +511,14 @@ mod tests {
         assert_eq!(diff_lines(odd), [odd]);
         // 単独の `\r` も区切りではない。CRLF の `\r` だけを落とす
         assert_eq!(diff_lines("a\rb\r\n"), ["a\rb"]);
+    }
+
+    #[test]
+    fn path_の空白は残し_tab_の区切りだけ取る() {
+        let d = "+++ b/docs/a b \t\n@@ -0,0 +1 @@\n+x\n";
+        assert_eq!(added_lines(d), vec![("docs/a b ".to_string(), 1, "x")]);
+        let d = "+++ b/docs/a\n@@ -0,0 +1 @@\n+x\n";
+        assert_eq!(added_lines(d), vec![("docs/a".to_string(), 1, "x")]);
     }
 
     #[test]

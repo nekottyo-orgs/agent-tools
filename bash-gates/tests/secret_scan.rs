@@ -828,7 +828,22 @@ fn value_overlapping_a_credential_is_masked() {
     assert!(findings(&out).is_some_and(|f| !f.is_empty()), "検出なし: {}", out.stdout);
 }
 
-// 値の位置に重ならない別 class の検出は伏せない (範囲は一致全体でなく値の位置)
+// password と同じ文字列が user 名にもあるとき、別 class の検出 (メール) が password の一部を出さない
+#[test]
+fn value_overlapping_a_credential_with_repeated_text_is_masked() {
+    if reference_mode() {
+        return;
+    }
+    let t = Tmp::new();
+    let p = t.file("policy.json", &policy_json().to_string());
+    let pw = gen(ALNUM, 12, 413);
+    let out = scan(&p, "example/repo", &format!("+++ b/f.md\n@@ -0,0 +1 @@\n+DSN=postgres://{pw}:{pw}@db.corp.io/app\n"));
+    assert_eq!(out.code, Some(0), "stderr={}", out.stderr);
+    // password 自身の検出は先頭 6 文字を残す決まり。メールの検出は値の一部も出さない
+    assert!(out.stdout.contains(r#""rule":"email","value":"…""#), "メールの検出の値が伏せられていない: {}", out.stdout);
+}
+
+// 値の位置に重ならない別 class の検出は伏せない (範囲は credential の一致全体)
 #[test]
 fn value_not_overlapping_a_credential_is_kept() {
     if reference_mode() {
