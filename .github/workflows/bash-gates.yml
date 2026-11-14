@@ -8,10 +8,12 @@ on:
     paths:
       - 'bash-gates/**'
       - '.github/workflows/bash-gates.yml'
+      - '.github/workflows/actions.lock'
   pull_request:
     paths:
       - 'bash-gates/**'
       - '.github/workflows/bash-gates.yml'
+      - '.github/workflows/actions.lock'
 
 permissions:
   contents: read
@@ -21,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         run: rustup toolchain install 1.98 --profile minimal && rustup default 1.98

@@ -1,13 +1,17 @@
-# tagpr が作った bash-gates の Release (tag は bash-gates/vX.Y.Z) に、binary と sha256 を asset として載せる。
-# 起点は release: published。tagpr は GitHub App の token で Release を作る。GITHUB_TOKEN 以外の token の操作は後続の workflow を起こすので、この event は発火する。
-# release event はその tag の commit にある workflow を使う。この workflow が入る前の tag には asset が付かない。
-# PR ではこのファイルを変えたときだけ build を回し、upload は Release のときだけ走る。
+# bash-gates の binary と sha256 を、tagpr が draft で作った Release (tag は bash-gates/vX.Y.Z) に載せてから公開する。
+# repo は immutable releases が有効で、公開した Release には asset を足せない。asset が全部揃ってから公開する順序にする。
+# draft の Release を起点にできる release event は無い (created などは draft では発火しない)。起点は tag の push にする。
+# tagpr は GitHub App の token で tag を push するので、後続の workflow が起動する。
+# tagpr は tag を push してから draft を作る。upload の job は draft が見えるまで待つ。
+# 失敗したときは未公開の draft と tag が残る。asset の無い Release は公開されない。run の再実行で直る。
+# PR ではこのファイルを変えたときだけ build を回し、upload と公開は tag の push のときだけ走る。
 # 取る側は <asset>.sha256 を同じ dir に置いて `shasum -a 256 -c <asset>.sha256` で検証する。
 name: bash-gates-release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'bash-gates/v*'
   pull_request:
     paths:
       - '.github/workflows/bash-gates-release.yml'
@@ -16,7 +20,6 @@ permissions: {}
 
 jobs:
   build:
-    if: github.event_name == 'pull_request' || startsWith(github.event.release.tag_name, 'bash-gates/v')
     strategy:
       matrix:
         include:
@@ -29,10 +32,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      # release のときは tag の commit を build する。PR では ref が空になり PR の merge commit になる
+      # tag の push では tag の commit、PR では PR の merge commit を build する
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
 
       - name: Install Rust
@@ -67,10 +69,14 @@ jobs:
   # contents: write はこの job だけに付ける。checkout せず、build の成果物だけを扱う
   upload:
     needs: build
-    if: github.event_name == 'release'
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/download-artifact@v8.0.2
         with:
@@ -85,10 +91,26 @@ jobs:
           test "${#files[@]}" -eq 4
           for f in *.sha256; do shasum -a 256 -c "$f"; done
 
-      # --clobber は付けない。build は bit 単位で再現しないので、再実行で asset と sha256 が黙って変わると取る側の固定が壊れる
+      # tagpr が draft を作るのは tag の push より後。build の間に作られるはずだが、遅れても待つ (最大 5 分)
+      # 公開済みの Release には触らない。immutable なので asset を足せず、足りないまま黙って確定させないため
+      - name: Wait for the draft release
+        run: |
+          state=
+          for _ in $(seq 1 30); do
+            state=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
+            if [ -n "$state" ]; then break; fi
+            sleep 10
+          done
+          test "$state" = true || { echo "release $TAG is not a draft (isDraft: ${state:-not found})" >&2; exit 1; }
+
+      # draft は公開前で asset を差し替えられるので --clobber を付ける。途中で失敗した run の再実行で、残った asset を置き換える
+      # 4 ファイルは 1 回の run の build から出たもので、公開までに混ざらない
       - name: Upload assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$TAG" dist/*
+        run: gh release upload "$TAG" dist/* --clobber
+
+      - name: Check assets
+        run: test "$(gh release view "$TAG" --json assets --jq '.assets | length')" -eq 4
+
+      # upload と確認が全部済んでから公開する。ここで初めて immutable になる
+      - name: Publish
+        run: gh release edit "$TAG" --draft=false
