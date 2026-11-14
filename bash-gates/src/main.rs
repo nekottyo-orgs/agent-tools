@@ -24,7 +24,14 @@
 //   BASH_GATES_MANIFEST  manifest (hooks-registration.json) のパス
 //   BASH_GATES_FRESH     設定されていれば source との新旧比較を飛ばす (bash-gates.sh がビルド直後に 1 を付ける)
 //
+// subcommand: `bash-gates secret-scan --policy <path> --repo <owner/name>` は secret_scan.rs の検出エンジン。
+//             gate の起動経路と無関係なので、main の先頭で分岐し、stale 判定の exec や stdin の先読みを通さない
+//
 // 終了コード: 0。判定は stdout の JSON で返す。stale で bash-gates.sh へ exec したときは、その終了コード。
+//             secret-scan は 0 (走査完了) か 2 (引数不正・policy 読み込み失敗)。
+
+mod secret_rules;
+mod secret_scan;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -71,6 +78,18 @@ struct ToolInput {
 }
 
 fn main() {
+    if std::env::args_os().nth(1).is_some_and(|a| a == "secret-scan") {
+        let args: Result<Vec<String>, _> = std::env::args_os().skip(2).map(|a| a.into_string()).collect();
+        // 呼び出し側は 2 を fail-close として扱う。panic の既定の 101 は意味が決まっていない
+        let code = match args {
+            Ok(args) => std::panic::catch_unwind(|| secret_scan::run(args)).unwrap_or(2),
+            Err(_) => {
+                eprintln!("secret-scan: argument is not valid UTF-8");
+                2
+            }
+        };
+        std::process::exit(code);
+    }
     let hooks = hooks_dir();
     if std::env::var_os("BASH_GATES_FRESH").is_none() && is_stale(&hooks) {
         // exec が失敗したら古いバイナリのまま続ける (止めるより古い判定で通す方が害が小さい)
@@ -106,7 +125,7 @@ fn is_stale(hooks: &Path) -> bool {
         return false;
     };
     let src = hooks.join("bash-gates");
-    ["Cargo.toml", "Cargo.lock", "src/main.rs"]
+    ["Cargo.toml", "Cargo.lock", "src/main.rs", "src/secret_scan.rs", "src/secret_rules.rs"]
         .iter()
         .any(|f| mtime(&src.join(f)).is_some_and(|t| t > bin))
 }
