@@ -1,0 +1,12 @@
+# bash-gates の release 設定。tool ごとに tagpr の設定を分ける (config: bash-gates/.tagpr)。
+# tag は `bash-gates/v<version>` になる (tagPrefix は / 区切りになる仕様)。
+# パスは tagpr の作業 dir (repo root) 起点で書く。
+[tagpr]
+    releaseBranch = main
+    tagPrefix = bash-gates
+    vPrefix = true
+    versionFile = bash-gates/Cargo.toml
+    # release PR の CI は --locked で build するので、version を上げたら Cargo.lock も追従させる
+    postVersionCommand = cargo update --workspace --manifest-path bash-gates/Cargo.toml
+    changelogFile = bash-gates/CHANGELOG.md
+    releaseYAMLPath = bash-gates/.github/release.yml

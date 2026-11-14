@@ -3,7 +3,7 @@
 コーディングエージェント (Claude Code など) の運用で使う小さな tool を、tool ごとのディレクトリにまとめる repo。
 
 - tool ごとにディレクトリを分け、build と test の workflow は `.github/workflows/<tool>.yml` に置いて path filter で絞る
-- release の tag は `<tool>-v<version>` 形式 (例: `bash-gates-v0.1.0`)
+- release は tagpr で tool ごとに行い、tag は `<tool>/v<version>` 形式 (例: `bash-gates/v0.1.0`)
 
 ## tool 一覧
 

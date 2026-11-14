@@ -1,0 +1,28 @@
+# release の自動化 (https://github.com/Songmu/tagpr)。tool ごとに設定を分け、bash-gates は bash-gates/.tagpr で動かす。
+# 前提: repo の Settings > Actions > General で「Allow GitHub Actions to create and approve pull requests」を有効にする。
+# action は supply chain 対策で tag でなく commit SHA で固定する。
+name: tagpr
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
+jobs:
+  bash-gates:
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      # Songmu/tagpr v1.22.0
+      - uses: Songmu/tagpr@047aec4b6c0ce166f52958b5a97f5a3d927fd65b
+        with:
+          config: bash-gates/.tagpr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
