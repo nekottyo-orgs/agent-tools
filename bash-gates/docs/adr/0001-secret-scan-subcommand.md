@@ -15,15 +15,15 @@ commit と投稿の gate が使う secret 検出器は、Python 3 の単体 scri
 ### 入出力の契約
 
 - stdin に `git diff --unified=0` 形の unified diff を渡す。検査するのは追加行だけ
-- stdout に `{"findings":[{"file","line","class","rule","value"}],"scanned":bool}` を返す。`scanned` が false のときは、policy に載っていない repo
-- exit 0 は走査完了 (検出の有無は stdout を見る)、exit 2 は引数または policy の不正
-- credential 系の `value` は先頭 6 文字と `…` だけを返し、検出した秘密の全体を報告に再掲しない
+- stdout に `{"findings":[{"file","line","class","rule","value"}],"scanned":bool}` を返す。`scanned` が false のときは、policy に載っていない (または null の) repo
+- exit 0 は走査完了 (検出の有無は stdout を見る)、exit 2 は引数または対象 repo の policy の不正
+- credential 系の `value` は、7 文字以上なら先頭 6 文字と `…`、6 文字以下なら `…` だけを返し、検出した秘密の全体を報告に再掲しない
 
 呼び出し側は、`scanned` が true で `findings` が配列のときだけ結果を信用する。subcommand を持たない古い binary は、exit 0 で stdout が空になる。その場合も検出なしとみなさず、呼び出し側の fail の向き (deny) に倒す。
 
 ### dispatcher より前で分岐する
 
-`secret-scan` は `main()` の先頭で分岐し、dispatcher の stale 判定・子 gate の exec・stdin の読み込みより前に抜ける。diff を stdin に渡すので、dispatcher 側が先に読んではいけない。dispatcher の起動時間は変わらない (実測 約 3.5 ms)。
+`secret-scan` は `main()` の先頭で分岐し、dispatcher の stale 判定・子 gate の exec・stdin の読み込みより前に抜ける。diff を stdin に渡すので、dispatcher 側が先に読んではいけない。dispatcher の起動時間は変わらない (実測 約 3.3 ms)。
 
 ### 正規表現は fancy-regex
 
@@ -31,7 +31,7 @@ commit と投稿の gate が使う secret 検出器は、Python 3 の単体 scri
 
 - `\s`: Python は `\x1c`-`\x1f` も空白とみなす。`\s\x1c-\x1f` に展開する
 - `(?i)`: Python は `İ` (U+0130) と `ı` (U+0131) を `i` に畳み込む。`i` と英字クラスに足す
-- `\d`: どちらも Unicode の数字全般に当たり、集合は同じ (全 760 文字で確認)。CIDR の prefix 長は Unicode の数字から値を引く
+- `\d`: どちらも Unicode の数字全般に当たり、集合は同じ (Python 3.14 の Unicode 16.0 の数字 760 文字で確認)。CIDR の prefix 長は Unicode の数字から値を引く
 - 検出の順序は、ルール表の順 → 行内の出現順。Python の `finditer` と同じ
 
 ### `is_global` の基準は Python 3.14
@@ -59,12 +59,12 @@ binary と public repo が持つのは、vendor 共通の形のルールだけ�
 
 ### 不正な UTF-8
 
-従来の Python 実装は、不正な UTF-8 の入力で例外終了した。Rust 実装は lossy に変換して走査を続ける。ASCII 側の秘密は検出でき、他の encoding の file を 1 つ含むだけで commit が止まり続けることがなくなる。
+従来の Python 実装は、UTF-8 locale で不正な UTF-8 の入力を受けると例外終了した。Rust 実装は lossy に変換して走査を続ける。ASCII 側の秘密は検出でき、他の encoding の file を 1 つ含むだけで commit が止まり続ける、という状況は起きない。
 
 ## 検証
 
 - 従来の Python 実装と同じ入力に当て、出力 (JSON を正規化したもの) と exit code を比べた
   - 約 10 万ケース (801 file)。全 35 ルールと、各ルールの境界値・文字種の変異・diff の形・policy の除外を含む。値はすべて実行時に連結して作った合成値
-  - IPv4 / IPv6 の予約レンジの境界値は、約 40 万アドレスで全一致
+  - IPv4 / IPv6 の予約レンジの境界値は、約 41 万行 (約 20 万のアドレスを複数の表記で) で全一致
 - `cargo test` に、検出ルールごとの「止める / 止めない」の table 駆動 test (`tests/secret_scan.rs`) を置く
-- 1 回の実行時間 (2 行の diff): Python 約 29 ms、Rust 約 5.7 ms。202 行の diff では Python 約 31 ms、Rust 約 9.7 ms
+- 1 回の実行時間 (追加 2 行の diff): Python 約 29 ms、Rust 約 5.7 ms。追加 200 行の diff では Python 約 31 ms、Rust 約 9.7 ms
