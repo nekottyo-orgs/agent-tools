@@ -2,7 +2,7 @@
 //       credential を検出して JSON で返す (`bash-gates secret-scan` subcommand)。
 //       判定と deny は呼び出し側 (シェル) の責務で、ここは「何がどこで見つかったか」だけを返す。
 //       hooks/_shared/secret-scan.py の Rust 移植で、検出の有無・位置・rule が揃うようにする。
-//       揃えない箇所 (value の伏せ字、`++` で始まる追加行など) は ADR 0001 に載せている。
+//       揃えない箇所 (value の伏せ字、行の区切り、`++` で始まる追加行など) は ADR 0001 に載せている。
 //
 // 安全設計 (why):
 //   - 誤検知は除外リストでなく構造で潰す。撃つ gate は無視される gate になるため。
@@ -11,6 +11,8 @@
 //     commit が恒久的に deny されて初日で破綻する
 //   - hunk の残り行数を数えて追加行を読む。内容が `++ ` で始まる追加行を file header と
 //     取り違えると、以降の走査や除外の判定を内容で外させられる (fail-open)
+//   - 行は git と同じ `\n` だけで分ける。`\x0c` などを区切りにすると、1 つの追加行が割れて
+//     hunk の行数の勘定が狂い、後ろの断片が header や読み捨ての行になる (fail-open)
 //   - 正規表現の先読み・後読みが探索上限で Err になったときは、見落とさないよう検出側に倒す
 //     (値は `…`)。fancy-regex は Python の re と違い、上限超過を結果でなく Err で返す
 //   - policy の形が想定と違うときは黙って通さず exit 2 にする。素通りは fail-open になる
@@ -266,24 +268,14 @@ pub fn shannon_entropy(value: &str) -> f64 {
     -sum
 }
 
-// Python の str.splitlines() と同じ区切り。`\r\n` は 1 つの区切りで、末尾の空行は作らない
-fn splitlines(s: &str) -> Vec<&str> {
-    let mut lines = Vec::new();
-    let mut start = 0;
-    let mut it = s.char_indices().peekable();
-    while let Some((i, c)) = it.next() {
-        if !matches!(c, '\n' | '\r' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}') {
-            continue;
-        }
-        lines.push(&s[start..i]);
-        start = i + c.len_utf8();
-        if c == '\r' && it.peek().is_some_and(|&(_, n)| n == '\n') {
-            it.next();
-            start += 1;
-        }
-    }
-    if start < s.len() {
-        lines.push(&s[start..]);
+// diff の行は `\n` だけで分ける。git が行を区切るのは `\n` だけで、`\x0c` や U+2028 などは
+// 行の内容の一部。Python の str.splitlines() の区切り (これらを含む) で割ると、1 つの追加行が
+// 複数の断片に割れて、hunk の行数の勘定が狂い、内容の断片が header と読まれてしまう。
+// CRLF の改行の `\r` は行の内容に含めない。末尾の空行は作らない
+fn diff_lines(s: &str) -> Vec<&str> {
+    let mut lines: Vec<&str> = s.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+    if lines.last() == Some(&"") {
+        lines.pop();
     }
     lines
 }
@@ -333,7 +325,7 @@ fn added_lines(diff: &str) -> Vec<(String, u64, &str)> {
     let mut path: Option<String> = None;
     let mut lineno: u64 = 0;
     let (mut rem_old, mut rem_new) = (0u64, 0u64);
-    for raw in splitlines(diff) {
+    for raw in diff_lines(diff) {
         let in_hunk = rem_old > 0 || rem_new > 0;
         if in_hunk && raw.starts_with('+') {
             rem_new = rem_new.saturating_sub(1);
@@ -512,16 +504,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn splitlines_は_python_と同じ区切りを使う() {
-        assert_eq!(splitlines("a\nb\r\nc\rd"), ["a", "b", "c", "d"]);
-        assert_eq!(splitlines("a\n"), ["a"]);
-        assert_eq!(splitlines("a\n\n"), ["a", ""]);
-        assert_eq!(splitlines(""), Vec::<&str>::new());
-        assert_eq!(splitlines("a\x0bb\x0cc\x1cd\x1de\x1ef\u{85}g\u{2028}h\u{2029}i"), ["a", "b", "c", "d", "e", "f", "g", "h", "i"]);
-        // \x1f は区切りではない
-        assert_eq!(splitlines("a\x1fb"), ["a\x1fb"]);
-        assert_eq!(splitlines("\r\n\r\n"), ["", ""]);
-        assert_eq!(splitlines("\r\r\n"), ["", ""]);
+    fn diff_lines_は_改行だけで分ける() {
+        assert_eq!(diff_lines("a\nb\r\nc"), ["a", "b", "c"]);
+        assert_eq!(diff_lines("a\n"), ["a"]);
+        assert_eq!(diff_lines("a\n\n"), ["a", ""]);
+        assert_eq!(diff_lines(""), Vec::<&str>::new());
+        // Python の splitlines の区切りは行の内容の一部として残る
+        let odd = "a\x0bb\x0cc\x1cd\x1de\x1ef\u{85}g\u{2028}h\u{2029}i\x1fj";
+        assert_eq!(diff_lines(odd), [odd]);
+        // 単独の `\r` も区切りではない。CRLF の `\r` だけを落とす
+        assert_eq!(diff_lines("a\rb\r\n"), ["a\rb"]);
     }
 
     #[test]

@@ -16,6 +16,7 @@ commit と投稿の gate が使う secret 検出器は、Python 3 の単体 scri
 
 - stdin に `git diff --unified=0` 形の unified diff を渡す。検査するのは追加行だけ
   - `@@ -a,b +c,d @@` の行数を数え、hunk の中の `+` 始まりの行は、内容が `++ ` で始まっていても追加行として読む。hunk の外の `+++ ` だけを file header とみなす
+  - 行は git と同じく `\n` だけで分ける (CRLF の `\r` は内容に含めない)。`\x0b`、`\x0c`、`\x1c`-`\x1e`、U+0085、U+2028、U+2029 は行の内容の一部で、hunk の行数の勘定を割らず、行の途中にあっても後ろまで走査する
   - git が quote した path (`"b/docs/\346..."`) は戻した実際の file 名で、除外の照合と報告に使う
   - 行に `secret-scan-gate:allow` を含む追加行は、全ルールの対象から外す (行内の除外)
 - stdout に `{"findings":[{"file","line","class","rule","value"}],"scanned":bool}` を返す。`scanned` が false のときは、policy に載っていない (または null の) repo
@@ -68,12 +69,13 @@ binary と public repo が持つのは、vendor 共通の形のルールだけ�
 ## 検証
 
 - 従来の Python 実装と同じ入力に当て、出力 (JSON を正規化したもの) と exit code を比べた
-  - 約 10 万ケース (801 file)。607 file が一致し、194 file は意図した差 (下記)。全 35 ルールと、各ルールの境界値・文字種の変異・diff の形・policy の除外を含む。値はすべて実行時に連結して作った合成値
-  - 差の 194 file は次の 5 つ
-    - 別 class の検出が credential の値に重なり、値が伏せられる入力 (171 file)。検出の有無・位置・rule は同じで、`value` だけが違う
+  - 約 10 万ケース (801 file)。476 file が一致し、325 file は意図した差 (下記)。全 35 ルールと、各ルールの境界値・文字種の変異・diff の形・policy の除外を含む。値はすべて実行時に連結して作った合成値
+  - 差の 325 file は次の 6 つ
+    - 行の区切り文字を含む入力 (158 file)。従来の実装は `str.splitlines()` の区切りでも行を割るので、行番号や、区切りをまたぐ値の検出が変わる。Rust 側は 1 行として走査する
+    - 別 class の検出が credential の値に重なり、値が伏せられる入力 (154 file)。検出の有無・位置・rule は同じで、`value` だけが違う
     - hunk header に Unicode の数字や u64 に収まらない大きさの数字がある入力 (5 file)。行番号だけが違う
     - 不正な UTF-8 (4 file)
-    - 追加行の内容が `++` で始まる入力 (13 file)。Rust 側は追加行として走査する
+    - 追加行の内容が `++` で始まる入力 (3 file)。Rust 側は追加行として走査する
     - git が quote した path (1 file)。Rust 側は戻した file 名を使う
   - IPv4 / IPv6 の予約レンジの境界値は、約 41 万行 (約 20 万のアドレスを複数の表記で) で全一致
 - `cargo test` に、検出ルールごとの「止める / 止めない」の table 駆動 test (`tests/secret_scan.rs`) を置く

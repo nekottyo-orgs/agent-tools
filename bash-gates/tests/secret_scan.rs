@@ -665,6 +665,27 @@ fn diff_cases() -> Vec<DiffCase> {
         ),
         ("hunk ごとに行番号を取り直す", r, "+++ b/f.md\n@@ -1,0 +5,2 @@\n+x\n+8.8.8.8\n@@ -9 +20 @@\n+8.8.4.4\n", vec![("f.md", 6), ("f.md", 20)]),
         ("hunk が無ければ行番号は 0 から数える", r, "+++ b/f.md\n+x\n+8.8.8.8\n", vec![("f.md", 1)]),
+        ("hunk が終わった後の +++ は file header として読む", r, "+++ b/a.md\n@@ -0,0 +1 @@\n+x\n+++ b/b.md\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![("b.md", 1)]),
+        (
+            "削除行と文脈行も数えて hunk の終わりを決める (行番号は --unified=0 の出力を前提に文脈行で進めない)",
+            r,
+            "+++ b/a.md\n@@ -1,2 +1,2 @@\n-x\n y\n+8.8.8.8\n+++ b/b.md\n@@ -0,0 +1 @@\n+8.8.4.4\n",
+            vec![("a.md", 1), ("b.md", 1)],
+        ),
+        ("pragma の行だけ飛ばし、次の行は見る", r, "+++ b/f.md\n@@ -0,0 +1,2 @@\n+8.8.8.8 # secret-scan-gate:allow\n+8.8.4.4\n", vec![("f.md", 2)]),
+        (
+            "exempt は差分内のファイルごとに効く",
+            "example/docs",
+            "+++ b/docs/a.md\n@@ -0,0 +1 @@\n+8.8.8.8\n+++ b/src/a.md\n@@ -0,0 +1 @@\n+8.8.8.8\n",
+            vec![("src/a.md", 1)],
+        ),
+    ]
+}
+
+// Rust 側で決めた読み方 (従来の実装と揃えない箇所)。SECRET_SCAN_REFERENCE で従来の実装を当てるときは外す
+fn diff_cases_rust_only() -> Vec<DiffCase> {
+    let r = "example/repo";
+    vec![
         // hunk の中の `+` 始まりの行は、内容が `++ ` で始まっていても追加行として読む
         (
             "内容が ++ で始まる追加行を file header と読まず path を保つ",
@@ -689,31 +710,37 @@ fn diff_cases() -> Vec<DiffCase> {
         ("quote された path も戻して除外を効かせる", "example/docs", "+++ \"b/docs/\\346\\227\\245.md\"\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![]),
         ("quote された path は戻した名前で報告する", r, "+++ \"b/\\346\\227\\245.md\"\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![("日.md", 1)]),
         ("内容が ++ だけの追加行も 1 行として数える", r, "+++ b/f.md\n@@ -0,0 +1,2 @@\n+++\n+8.8.8.8\n", vec![("f.md", 2)]),
-        ("hunk が終わった後の +++ は file header として読む", r, "+++ b/a.md\n@@ -0,0 +1 @@\n+x\n+++ b/b.md\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![("b.md", 1)]),
+        // git が行を区切るのは `\n` だけ。`\x0c` や U+2028 は行の内容で、hunk の行数の勘定を割らない
         (
-            "削除行と文脈行も数えて hunk の終わりを決める (行番号は --unified=0 の出力を前提に文脈行で進めない)",
+            "追加行の内容に form feed と +++ /dev/null があっても hunk を早く終わらせない",
             r,
-            "+++ b/a.md\n@@ -1,2 +1,2 @@\n-x\n y\n+8.8.8.8\n+++ b/b.md\n@@ -0,0 +1 @@\n+8.8.4.4\n",
-            vec![("a.md", 1), ("b.md", 1)],
+            "+++ b/f.md\n@@ -0,0 +1 @@\n+x\x0c+++ /dev/null\n@@ -9,0 +10 @@\n+8.8.8.8\n",
+            vec![("f.md", 10)],
         ),
-        ("pragma の行だけ飛ばし、次の行は見る", r, "+++ b/f.md\n@@ -0,0 +1,2 @@\n+8.8.8.8 # secret-scan-gate:allow\n+8.8.4.4\n", vec![("f.md", 2)]),
         (
-            "exempt は差分内のファイルごとに効く",
+            "追加行の内容に U+2028 と +++ b/docs/y があっても除外の path に切り替わらない",
             "example/docs",
-            "+++ b/docs/a.md\n@@ -0,0 +1 @@\n+8.8.8.8\n+++ b/src/a.md\n@@ -0,0 +1 @@\n+8.8.8.8\n",
-            vec![("src/a.md", 1)],
+            "+++ b/f.md\n@@ -0,0 +1 @@\n+x\u{2028}+++ b/docs/y\n@@ -9,0 +10 @@\n+8.8.8.8\n",
+            vec![("f.md", 10)],
         ),
+        ("区切り文字より後ろの値も同じ行として走査する", r, "+++ b/f.md\n@@ -0,0 +1 @@\n+x\x0c8.8.8.8\n", vec![("f.md", 1)]),
     ]
 }
 
 #[test]
 fn diff_reading_nothing_to_report() {
     diff_ng(&diff_cases(), false);
+    if !reference_mode() {
+        diff_ng(&diff_cases_rust_only(), false);
+    }
 }
 
 #[test]
 fn diff_reading_reports_file_and_line() {
     diff_ng(&diff_cases(), true);
+    if !reference_mode() {
+        diff_ng(&diff_cases_rust_only(), true);
+    }
 }
 
 // 不正な UTF-8 は lossy に変換して走査を続ける。従来の実装は例外終了するので、契約として決めた Rust 側だけを見る
@@ -799,6 +826,21 @@ fn value_overlapping_a_credential_is_masked() {
     assert_eq!(out.code, Some(0), "stderr={}", out.stderr);
     assert!(!out.stdout.contains(&pw), "password の全体が出力に残っている: {}", out.stdout);
     assert!(findings(&out).is_some_and(|f| !f.is_empty()), "検出なし: {}", out.stdout);
+}
+
+// 値の位置に重ならない別 class の検出は伏せない (範囲は一致全体でなく値の位置)
+#[test]
+fn value_not_overlapping_a_credential_is_kept() {
+    if reference_mode() {
+        return;
+    }
+    let t = Tmp::new();
+    let p = t.file("policy.json", &policy_json().to_string());
+    let pw = gen(ALNUM, 12, 412);
+    let out = scan(&p, "example/repo", &format!("+++ b/f.md\n@@ -0,0 +1 @@\n+DSN=postgres://appuser:{pw}@db.corp.io/app resolver=8.8.8.8\n"));
+    assert_eq!(out.code, Some(0), "stderr={}", out.stderr);
+    assert!(!out.stdout.contains(&pw), "password の全体が出力に残っている: {}", out.stdout);
+    assert!(out.stdout.contains("8.8.8.8"), "重ならない検出の値まで伏せている: {}", out.stdout);
 }
 
 // stdin を読めないときは、途中までの走査を完全な走査に見せず exit 2

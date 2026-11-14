@@ -28,7 +28,7 @@
 //             gate の起動経路と無関係なので、main の先頭で分岐し、stale 判定の exec や stdin の先読みを通さない
 //
 // 終了コード: 0。判定は stdout の JSON で返す。stale で bash-gates.sh へ exec したときは、その終了コード。
-//             secret-scan は 0 (走査完了) か 2 (引数不正・policy 読み込み失敗)。
+//             secret-scan は 0 (走査完了) か 2 (引数不正・policy 読み込み失敗・stdin の読み取り失敗)。
 
 mod secret_rules;
 mod secret_scan;
