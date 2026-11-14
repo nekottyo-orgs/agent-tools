@@ -1,5 +1,8 @@
 # release の自動化 (https://github.com/Songmu/tagpr)。tool ごとに設定を分け、bash-gates は bash-gates/.tagpr で動かす。
-# 前提: repo の Settings > Actions > General で「Allow GitHub Actions to create and approve pull requests」を有効にする。
+# 前提: GitHub App を repo に install し、App の Client ID を repository variable の APP_CLIENT_ID、
+#       private key を repository secret の APP_PRIVATE_KEY に置く。
+#       App の権限は Contents / Pull requests を Read and write、Issues を Read-only 以上にする。
+# release PR と tag を App の token で作るのは、GITHUB_TOKEN の操作では後続の workflow が動かないため。
 # action は supply chain 対策で tag でなく commit SHA で固定する。
 name: tagpr
 
@@ -7,15 +10,24 @@ on:
   push:
     branches: ["main"]
 
+# tagpr 本体は App の token (env の GITHUB_TOKEN) で動く。この permissions が効くのは checkout が使う既定の token だけ。
 permissions:
-  contents: write
-  pull-requests: write
-  issues: read
+  contents: read
 
 jobs:
   bash-gates:
     runs-on: ubuntu-latest
     steps:
+      # actions/create-github-app-token v3.3.0
+      # app-id は非推奨 (deprecationMessage: "Use 'client-id' instead.") なので client-id を使う
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
+        id: app-token
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: read
       # actions/checkout v6
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -25,4 +37,4 @@ jobs:
         with:
           config: bash-gates/.tagpr
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
