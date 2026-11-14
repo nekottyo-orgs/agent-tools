@@ -73,6 +73,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # tag を消して作り直すと、同じ draft に 2 つの run が届く。一方の --clobber の途中で他方が公開すると、asset 不足のまま確定する。draft の確認から公開までを tag ごとに直列にする
+    concurrency:
+      group: bash-gates-release-${{ github.ref_name }}
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
