@@ -1,5 +1,5 @@
 # bash-gates/ の build と回帰テスト。tool ごとに workflow を分け、path filter で他の tool の変更では走らせない。
-# toolchain の version (Rust 1.98 / Lean v4.35.0 / elan v4.2.4) は手元の検証と同じ値に固定する。
+# toolchain の version (Rust 1.98 / Lean v4.35.0 / elan v4.2.4) は手元の検証と同じ値に固定する。elan は release asset の sha256 でも固定する。
 name: bash-gates
 
 on:
@@ -25,11 +25,16 @@ jobs:
         run: rustup toolchain install 1.98 --profile minimal && rustup default 1.98
 
       # Lean は証明と vectors.txt の作り直しを検査する。テスト script は lean が PATH に無いとその検査だけ skip する
+      # elan-init.sh は binary を releases/latest から取り version を固定できないので使わず、
+      # v4.2.4 の release asset を sha256 で検証してから展開する (ubuntu-latest は x86_64)。
+      # sha256 は release API の asset の digest と、手元で download して計算した値が一致したもの
       - name: Install Lean
         run: |
-          # elan v4.2.4 の commit (annotated tag の指す先)。elan-init.sh 自身は elan の binary を releases/latest から取る
-          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/227caca133724d5516bee25c2aeb3e609478f2d8/elan-init.sh \
-            | sh -s -- -y --no-modify-path --default-toolchain leanprover/lean4:v4.35.0
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o elan.tar.gz https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
+          echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  elan.tar.gz" | sha256sum -c -
+          tar xzf elan.tar.gz
+          ./elan-init -y --no-modify-path --default-toolchain leanprover/lean4:v4.35.0
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       # テスト script は --offline でビルドするので、依存は先に取っておく
