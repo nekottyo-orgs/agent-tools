@@ -329,18 +329,24 @@ pub fn build(entropy: &Entropy) -> Vec<Rule> {
             r"(?<![A-Za-z0-9_])dt0[cs]\d{2}\.[A-Z0-9]{24}\.[A-Z0-9]{64}(?![A-Za-z0-9])",
             plain(),
         ),
-        // Datadog: API key は 32 桁 / application key は 40 桁の小文字 16 進。キー名で縛り、桁数が合わない値は撃たない
+        // Datadog: API key は 32 桁 / application key は 40 桁の小文字 16 進。キー名で縛り、桁数が合わない値は撃たない。
+        // キー名は環境変数 (DD_API_KEY / DATADOG_API_KEY / DD_APP_KEY / DD_APPLICATION_KEY) と、HTTP header の DD-API-KEY。
+        // header 名だけ大文字小文字を問わない (HTTP の仕様)。環境変数名は大文字固定なので (?i) を掛けない。
+        // header の DD-APPLICATION-KEY は、下の `application[_-]?key` の枝が既に拾う
         rule(
             "credential",
             "datadog-api-key",
-            r#"(?<![A-Za-z0-9_])DD_API_KEY["']?[<S>]*[:=][<S>]*["']?([0-9a-f]{32})(?![0-9a-f])"#,
+            concat!(
+                r#"(?<![A-Za-z0-9_])(?:DD_API_KEY|DATADOG_API_KEY|(?i:DD-AP[i<X>]-KEY))"#,
+                r#"["']?[<S>]*[:=][<S>]*["']?([0-9a-f]{32})(?![0-9a-f])"#
+            ),
             assigned(1, ent("datadog", 3.0)),
         ),
         rule(
             "credential",
             "datadog-app-key",
             concat!(
-                r#"(?<![A-Za-z0-9_])(?:DD_APP_KEY|(?i:appl[i<X>]cat[i<X>]on[_-]?key))["']?[<S>]*[:=][<S>]*["']?"#,
+                r#"(?<![A-Za-z0-9_])(?:DD_APP(?:LICATION)?_KEY|(?i:appl[i<X>]cat[i<X>]on[_-]?key))["']?[<S>]*[:=][<S>]*["']?"#,
                 r"([0-9a-f]{40})(?![0-9a-f])"
             ),
             assigned(1, ent("datadog", 3.0)),
