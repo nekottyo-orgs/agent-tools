@@ -98,7 +98,7 @@ Bash の PreToolUse gate 群を 1 つのプロセス `bash-gates` で受ける�
 
 v0.1.2 で足した subcommand の `bash-gates secret-scan` は、commit 89400c9 で別 binary に分けた。subcommand の削除なので、commit f7407c7 で version を minor の 0.2.0 に上げた。
 
-分けた理由と比べた案は [secret-scan の ADR 0001 の追補](../../../secret-scan/docs/adr/0001-secret-scan-subcommand.md#追補-別-binary-に分けた) を参照。
+分けた理由と比べた案は [secret-scan の ADR 0002](../../../secret-scan/docs/adr/0002-separate-binary.md) を参照。
 
 ## 検討した代替案と捨てた理由
 
@@ -113,7 +113,7 @@ A〜G は、`src/main.rs` のコメントにある理由から起こした案で
 | E. 子とパイプでつなぐ | stdio をパイプにする | 孫が握ると読み取りが返らない |
 | F. 失敗時に非 0 で抜ける | panic などを終了コードで返す | 退避側が走り、子が二重に動く |
 | G. exec の失敗で止める | 古い binary では判定しない | 古い判定で通す方が害が小さい |
-| H. secret-scan を subcommand のまま | 同じ binary に検出器を持つ | secret-scan の ADR 0001 の追補を参照 |
+| H. secret-scan を subcommand のまま | 同じ binary に検出器を持つ | secret-scan の ADR 0002 を参照 |
 
 ## 影響
 
