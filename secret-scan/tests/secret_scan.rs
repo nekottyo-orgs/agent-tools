@@ -1,4 +1,4 @@
-// `bash-gates secret-scan` (検出エンジン) の integration test。
+// `secret-scan` binary (検出エンジン) の integration test。
 //
 // Python 実装向けに書かれた test のうち、検出エンジンを直接叩く層をここへ移したもの。
 // git の staged / commit 形 / bypass / fail-close のような gate (シェル) の責務は対象外。
@@ -8,8 +8,8 @@
 // 断片に割って実行時に連結する。本体は固定 seed の疑似乱数で作る (固定なので閾値付きルールが
 // 稀に落ちることはなく、乱数列そのものはソースに現れない)。
 //
-// SECRET_SCAN_REFERENCE に実行ファイルを渡すと、bash-gates の代わりにそれを
-// `secret-scan --policy .. --repo ..` の形で呼ぶ。Python 実装に包んだ wrapper を渡せば、
+// SECRET_SCAN_REFERENCE に実行ファイルを渡すと、secret-scan の代わりにそれを
+// `--policy .. --repo ..` の形で呼ぶ。Python 実装に包んだ wrapper を渡せば、
 // このファイルの期待値が Python 実装と一致しているかを確かめられる。
 
 use serde_json::{json, Value};
@@ -35,10 +35,9 @@ fn reference_mode() -> bool {
 fn run_cli(args: &[&str], stdin: impl AsRef<[u8]>) -> Out {
     let mut cmd = match std::env::var_os("SECRET_SCAN_REFERENCE") {
         Some(p) => Command::new(p),
-        None => Command::new(env!("CARGO_BIN_EXE_bash-gates")),
+        None => Command::new(env!("CARGO_BIN_EXE_secret-scan")),
     };
     let mut child = cmd
-        .arg("secret-scan")
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -66,7 +65,7 @@ impl Tmp {
     fn new() -> Self {
         static N: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "bash-gates-secret-scan-test-{}-{}",
+            "secret-scan-test-{}-{}",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ));
@@ -460,6 +459,12 @@ mod detection_rules {
             c("DD_API_KEY (環境変数の形、16 進 32 桁)", format!("DD_API_KEY={h32}"), "datadog-api-key"),
             c("DD_APP_KEY (環境変数の形、16 進 40 桁)", format!("DD_APP_KEY={h40}"), "datadog-app-key"),
             c("application_key (クォート付きの代入、40 桁)", format!(r#"application_key: "{h40}""#), "datadog-app-key"),
+            // Datadog の別の書き方 (HTTP header の DD-API-KEY、DATADOG_API_KEY、DD_APPLICATION_KEY)
+            c("DD-API-KEY (HTTP header の形)", format!("DD-API-KEY: {h32}"), "datadog-api-key"),
+            c("DD-API-KEY (curl の -H、クォート付き)", format!(r#"curl -H "DD-API-KEY: {h32}" https://api.example.test/"#), "datadog-api-key"),
+            c("dd-api-key (header 名は大文字小文字を問わない)", format!("dd-api-key: {h32}"), "datadog-api-key"),
+            c("DATADOG_API_KEY (環境変数の形)", format!("DATADOG_API_KEY={h32}"), "datadog-api-key"),
+            c("DD_APPLICATION_KEY (環境変数の形)", format!("DD_APPLICATION_KEY={h40}"), "datadog-app-key"),
             c("Splunk HEC の Authorization header", format!("Authorization: Splunk {g}"), "splunk-hec"),
             c("AWS の XML <SecretAccessKey> (40 桁)", format!("<SecretAccessKey>{xs}</SecretAccessKey>"), "aws-secret-xml"),
             c("Stripe sk_test_", format!("STRIPE_KEY={sk}{stripe}"), "stripe"),
@@ -479,6 +484,16 @@ mod detection_rules {
             c("Datadog: 33 桁の 16 進は撃たない", format!("DD_API_KEY={h32}a"), "none"),
             c("Datadog: 41 桁の 16 進は撃たない (桁数の境界)", format!("DD_APP_KEY={h40}a"), "none"),
             c("Datadog: 低エントロピーの 16 進 (全部 0)", "DD_API_KEY=00000000000000000000000000000000", "none"),
+            c("DD-API-KEY: 環境変数の参照は撃たない", "curl -H \"DD-API-KEY: ${DD_API_KEY}\" https://api.example.test/", "none"),
+            c("DD-API-KEY: プレースホルダは撃たない", "DD-API-KEY: <your-api-key>", "none"),
+            c("DD-API-KEY: 33 桁の 16 進は撃たない", format!("DD-API-KEY: {h32}a"), "none"),
+            c("DD-API-KEY: 低エントロピーの 16 進 (全部 0)", "DD-API-KEY: 00000000000000000000000000000000", "none"),
+            c("DATADOG_API_KEY: 31 桁の 16 進は撃たない", format!("DATADOG_API_KEY={}", &h32[..31]), "none"),
+            c("DATADOG_API_KEY: 環境変数の参照は撃たない", "DATADOG_API_KEY=${DATADOG_API_KEY}", "none"),
+            c("DATADOG_API_KEY: 低エントロピーの 16 進 (全部 0)", "DATADOG_API_KEY=00000000000000000000000000000000", "none"),
+            c("DD_APPLICATION_KEY: 41 桁の 16 進は撃たない", format!("DD_APPLICATION_KEY={h40}a"), "none"),
+            c("DD_APPLICATION_KEY: 環境変数の参照は撃たない", "DD_APPLICATION_KEY=$DD_APPLICATION_KEY", "none"),
+            c("DD_APPLICATION_KEY: 低エントロピーの 16 進 (全部 0)", "DD_APPLICATION_KEY=0000000000000000000000000000000000000000", "none"),
             c("Splunk: header 形でない GUID は撃たない", format!("tenant {g}"), "none"),
             c("ya29 を含む短い語は撃たない", "build ya29.ok", "none"),
             c("Splunk: 低エントロピーの GUID (全部 0)", "Authorization: Splunk 00000000-0000-0000-0000-000000000000", "none"),
@@ -708,6 +723,11 @@ fn diff_cases() -> Vec<DiffCase> {
         ),
         ("区切り文字より後ろの値も同じ行として走査する", r, "+++ b/f.md\n@@ -0,0 +1 @@\n+x\x0c8.8.8.8\n", vec![("f.md", 1)]),
         ("pragma の行だけ飛ばし、次の行は見る", r,"+++ b/f.md\n@@ -0,0 +1,2 @@\n+8.8.8.8 # secret-scan-gate:allow\n+8.8.4.4\n", vec![("f.md", 2)]),
+        // hunk の外の `+++` で始まる行は、直後が空白でなければ file header でなく追加行 (`+++ ` だけが header)。
+        // 呼び出し側が本文を diff に包む形では、本文の 2 行目以降がこの位置に来る
+        ("hunk の外の +++ 直後が空白でない行は追加行", r, "+++ b/f.md\n@@ -0,0 +1 @@\n+x\n+++8.8.8.8\n", vec![("f.md", 2)]),
+        ("hunk の外の +++ 始まりの行 (本文を包む形)", r, "+++ b/body\n@@ -0,0 +1 @@\n+hello\n+++k 8.8.8.8\n", vec![("body", 2)]),
+        ("+++ だけの行も追加行として数える", r, "+++ b/f.md\n+++\n+8.8.8.8\n", vec![("f.md", 1)]),
         (
             "exempt は差分内のファイルごとに効く",
             "example/docs",
@@ -724,6 +744,9 @@ fn diff_cases_rust_only() -> Vec<DiffCase> {
         // git は非 ASCII の path を `"b/docs/\346..."` の形で出す。戻した path で除外を照合し、報告にも戻した名前を使う
         ("quote された path も戻して除外を効かせる", "example/docs", "+++ \"b/docs/\\346\\227\\245.md\"\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![]),
         ("quote された path は戻した名前で報告する", r, "+++ \"b/\\346\\227\\245.md\"\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![("日.md", 1)]),
+        // /dev/null の判定は、quote や tab を戻す前の文字列で行う。git は /dev/null をそのまま出すので、これらは別名の file
+        ("quote した /dev/null は別名の file として走査する", r, "+++ \"/dev/null\"\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![("/dev/null", 1)]),
+        ("tab の後ろに文字がある /dev/null は別名の file として走査する", r, "+++ /dev/null\tx\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![("/dev/null", 1)]),
     ]
 }
 
@@ -743,22 +766,75 @@ fn diff_reading_reports_file_and_line() {
     }
 }
 
-// 不正な UTF-8 は lossy に変換して走査を続ける。従来の実装は例外終了するので、契約として決めた Rust 側だけを見る
+// 不正な UTF-8 は置き換えて走査せず、exit 2 で止める。U+FFFD に畳むと値の長さと文字の散らばりが変わり、
+// エントロピーなどの閾値を割って検出が外れる。stdout には何も出さず、呼び出し側が fail-close で deny する
 #[test]
-fn invalid_utf8_is_scanned_lossily() {
+fn invalid_utf8_exits_2() {
     if reference_mode() {
         return;
     }
     let t = Tmp::new();
     let policy = t.file("policy.json", &policy_json().to_string());
-    let out = scan(&policy, "example/repo", b"+++ b/f.md\n@@ -0,0 +1,2 @@\n+\xff\xfe junk\n+8.8.8.8\n".as_slice());
-    assert_eq!(out.code, Some(0), "stderr={}", out.stderr);
-    let got: Vec<(String, u64)> = findings(&out)
-        .expect("JSON")
+    // 接続文字列の password の位置に不正な byte を置く形 (置き換えると password の長さと散らばりが閾値を割る)
+    let mut db: Vec<u8> = b"+++ b/src/a.rs\n@@ -0,0 +1 @@\n+url = postgres://appuser:".to_vec();
+    db.extend_from_slice(&[0xa5, 0xb1, 0xa6, 0xb2, 0xa7, 0xb3, 0xa8, 0xb4]);
+    db.extend_from_slice(b"@db.example.test/app\n");
+    // 途中で切れた多 byte 列
+    let mut cut: Vec<u8> = b"+++ b/src/a.rs\n@@ -0,0 +1 @@\n+url = postgres://appuser:".to_vec();
+    cut.extend_from_slice(&[0xe3, 0x81, 0xe4, 0x81, 0xe5, 0x81, 0xe6, 0x81]);
+    cut.extend_from_slice(b"@db.example.test/app\n");
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        ("password の位置の不正な byte", db),
+        ("途中で切れた多 byte 列", cut),
+        ("追加行の中の不正な byte", b"+++ b/f.md\n@@ -0,0 +1,2 @@\n+\xff\xfe junk\n+8.8.8.8\n".to_vec()),
+        ("file header の path の不正な byte", b"+++ b/f\xff.md\n@@ -0,0 +1 @@\n+8.8.8.8\n".to_vec()),
+    ];
+    let ng: Vec<String> = cases
         .iter()
-        .map(|x| (x["file"].as_str().unwrap_or("?").to_string(), x["line"].as_u64().unwrap_or(u64::MAX)))
+        .filter_map(|(desc, input)| {
+            let out = scan(&policy, "example/repo", input.as_slice());
+            (out.code != Some(2) || !out.stdout.is_empty()).then(|| format!("  NG {desc}: exit {:?} stdout={:?}", out.code, out.stdout))
+        })
         .collect();
-    assert_eq!(got, vec![("f.md".to_string(), 2)]);
+    assert!(ng.is_empty(), "{} 件失敗\n{}", ng.len(), ng.join("\n"));
+    // 有効な UTF-8 の同じ形は走査できる
+    let ok = scan(&policy, "example/repo", "+++ b/f.md\n@@ -0,0 +1 @@\n+8.8.8.8\n");
+    assert_eq!(ok.code, Some(0), "stderr={}", ok.stderr);
+}
+
+// hunk header が読めないときは、0 行の hunk として流さず exit 2 で止める。流すと、続く `+++ ` 始まりの追加行を
+// file header と読み、値が検査されない。壊れた形・全角の数字・u64 を超える count の 3 種
+#[test]
+fn unreadable_hunk_header_exits_2() {
+    if reference_mode() {
+        return;
+    }
+    let t = Tmp::new();
+    let policy = t.file("policy.json", &policy_json().to_string());
+    let huge = "9".repeat(30);
+    let wide = "\u{ff10},\u{ff10} +\u{ff11},\u{ff12}";
+    let cases: Vec<(&str, String)> = vec![
+        ("count が u64 を超える", format!("+++ b/src/a.rs\n@@ -0,0 +1,{huge} @@\n+x\n+++ k 8.8.8.8\n")),
+        ("count が u64 を超え、続く追加行が別の file になる", format!("+++ b/src/a.rs\n@@ -0,0 +1,{huge} @@\n+x\n+++ b/docs/z\n+8.8.8.8\n")),
+        ("全角の数字", format!("+++ b/src/a.rs\n@@ -{wide} @@\n+x\n+++ k 8.8.8.8\n")),
+        ("new の count が壊れている", "+++ b/docs/a.md\n@@ -1,5 +1,1x @@\n+x\n+++ b/src/b.rs\n@@ -0,0 +1 @@\n+8.8.8.8\n".to_string()),
+        ("削除の後ろの壊れた header", "+++ /dev/null\n@@ -1,5 +0,0x @@\n-x\n+++ b/src/b.rs\n@@ -0,0 +1 @@\n+8.8.8.8\n".to_string()),
+        ("閉じの @@ が無い", "+++ b/f.md\n@@ -0,0 +1\n+8.8.8.8\n".to_string()),
+    ];
+    let ng: Vec<String> = cases
+        .iter()
+        .filter_map(|(desc, input)| {
+            let out = scan(&policy, "example/repo", input.as_str());
+            (out.code != Some(2) || !out.stdout.is_empty()).then(|| format!("  NG {desc}: exit {:?} stdout={:?}", out.code, out.stdout))
+        })
+        .collect();
+    assert!(ng.is_empty(), "{} 件失敗\n{}", ng.len(), ng.join("\n"));
+
+    // header 行の後ろには、git が関数名などの文脈を付ける。そこに秘密が入りうるので、読めない理由を stderr に出すときも内容は出さない
+    let marker = ["ctx", "marker", "value"].concat();
+    let out = scan(&policy, "example/repo", format!("+++ b/f.md\n@@ -1x +1 @@ {marker}\n+x\n").as_str());
+    assert_eq!(out.code, Some(2));
+    assert!(!out.stderr.contains(&marker), "header の内容が stderr に出ている: {}", out.stderr);
 }
 
 // ---------------------------------------------------------------------------
@@ -882,12 +958,44 @@ fn unreadable_stdin_exits_2() {
     let t = Tmp::new();
     let p = t.file("policy.json", &policy_json().to_string());
     let dir = std::fs::File::open(std::env::temp_dir()).expect("directory を開けない");
-    let o = Command::new(env!("CARGO_BIN_EXE_bash-gates"))
-        .args(["secret-scan", "--policy", p.to_str().unwrap(), "--repo", "example/repo"])
+    let o = Command::new(env!("CARGO_BIN_EXE_secret-scan"))
+        .args(["--policy", p.to_str().unwrap(), "--repo", "example/repo"])
         .stdin(Stdio::from(dir))
         .output()
         .expect("起動に失敗");
     assert_eq!(o.status.code(), Some(2), "stdout={}", String::from_utf8_lossy(&o.stdout));
+}
+
+// 走査に失敗したときは、失敗の種類を stderr の `secret-scan: error=<token>` の 1 行で出す。呼び出し側がログに残して、原因を数えられるようにする。
+// stdout は空のまま (偽の「検出なし」を出さない契約を変えない)。token は固定の短い語で、入力の断片や path を含めない
+#[test]
+fn failure_reports_machine_readable_token() {
+    if reference_mode() {
+        return;
+    }
+    let t = Tmp::new();
+    let p = t.file("policy.json", &policy_json().to_string());
+    let bad_policy = t.file("bad.json", "[]");
+    // 入力の断片が token に混ざらないことを見るための目印。実行時に組み立てる
+    let marker = ["ctx", "marker", "value"].concat();
+    let invalid_utf8 = b"+++ b/f.md\n@@ -0,0 +1 @@\n+\xff\xfe\n".to_vec();
+    let bad_header = format!("+++ b/f.md\n@@ -1x +1 @@ {marker}\n+x\n").into_bytes();
+    let cases: Vec<(&str, Out, &str)> = vec![
+        ("引数が足りない", run_cli(&[], b""), "bad_arguments"),
+        ("policy が object でない", scan(&bad_policy, "example/repo", b""), "bad_policy"),
+        ("policy が読めない", scan(&t.0.join("none.json"), "example/repo", b""), "bad_policy"),
+        ("不正な UTF-8", scan(&p, "example/repo", invalid_utf8), "invalid_utf8"),
+        ("読めない hunk header", scan(&p, "example/repo", bad_header), "bad_hunk_header"),
+    ];
+    let ng: Vec<String> = cases
+        .iter()
+        .filter_map(|(desc, out, token)| {
+            let line = format!("secret-scan: error={token}");
+            let ok = out.code == Some(2) && out.stdout.is_empty() && out.stderr.lines().any(|l| l == line) && !out.stderr.contains(&marker);
+            (!ok).then(|| format!("  NG {desc}: exit {:?} stdout={:?} stderr={:?}", out.code, out.stdout, out.stderr))
+        })
+        .collect();
+    assert!(ng.is_empty(), "{} 件失敗\n{}", ng.len(), ng.join("\n"));
 }
 
 #[test]
@@ -972,6 +1080,8 @@ fn bad_arguments_exit_2() {
         ("--policy が無い", vec!["--repo", "example/repo"]),
         ("--repo の値が無い", vec!["--policy", p, "--repo"]),
         ("未知の引数", vec!["--policy", p, "--repo", "example/repo", "--unknown", "1"]),
+        // bash-gates の subcommand だった頃の呼び方。取り違えた呼び出し側が検出 0 件に化けないこと
+        ("subcommand 形", vec!["secret-scan", "--policy", p, "--repo", "example/repo"]),
     ];
     let ng: Vec<String> = cases
         .iter()

@@ -1,33 +1,63 @@
-# bash-gates の binary と sha256 を、tagpr が draft で作った Release (tag は bash-gates/vX.Y.Z) に載せてから公開する。
+# tool の binary と sha256 を、tagpr が draft で作った Release (tag は <tool>/vX.Y.Z) に載せてから公開する。
+# tool ごとに複製せず、tool × target の matrix で 1 本にしている。どの tool を build するかは tag の prefix で決める。
+# 新しい tool を足すときは、tag の glob と plan job の tools を足す。
 # repo は immutable releases が有効で、公開した Release には asset を足せない。asset が全部揃ってから公開する順序にする。
 # draft の Release を起点にできる release event は無い (created などは draft では発火しない)。起点は tag の push にする。
 # tagpr は GitHub App の token で tag を push するので、後続の workflow が起動する。
 # tagpr は tag を push してから draft を作る。upload の job は draft が見えるまで待つ。
 # 失敗したときは未公開の draft と tag が残る。asset の無い Release は公開されない。run の再実行で直る。
-# PR ではこのファイルを変えたときだけ build を回し、upload と公開は tag の push のときだけ走る。
+# PR ではこのファイルを変えたときだけ全 tool の build を回し、upload と公開は tag の push のときだけ走る。
 # 取る側は <asset>.sha256 を同じ dir に置いて `shasum -a 256 -c <asset>.sha256` で検証する。
-name: bash-gates-release
+name: release
 
 on:
   push:
     tags:
       - 'bash-gates/v*'
+      - 'secret-scan/v*'
   pull_request:
     paths:
-      - '.github/workflows/bash-gates-release.yml'
+      - '.github/workflows/release.yml'
 
 permissions: {}
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
+  # build する tool と target の組 (matrix) と、1 つの tag で揃うはずの asset の数を決める。target の一覧はここだけに書く
+  plan:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      assets: ${{ steps.plan.outputs.assets }}
+    steps:
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
           # 古い glibc の image で build すると、新しい image でも動く
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - runner: macos-latest
-            target: aarch64-apple-darwin
+          targets='[{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"},{"runner":"macos-latest","target":"aarch64-apple-darwin"}]'
+          if [ "$EVENT" = push ]; then
+            # tag の push は 1 tool 分。`<tool>/v<version>` の <tool> だけを build する
+            tool="${REF_NAME%%/*}"
+            case "$tool" in
+              bash-gates|secret-scan) ;;
+              *) echo "unknown tool in tag: $REF_NAME" >&2; exit 1 ;;
+            esac
+            tools=$(jq -cn --arg t "$tool" '[$t]')
+          else
+            tools='["bash-gates","secret-scan"]'
+          fi
+          matrix=$(jq -cn --argjson tools "$tools" --argjson targets "$targets" '{include: [$tools[] as $tool | $targets[] | . + {tool: $tool}]}')
+          # 1 つの tag の asset は、target ごとに binary と .sha256 の 2 つ
+          assets=$(jq -n --argjson targets "$targets" '$targets | length * 2')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "assets=$assets" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    strategy:
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -48,51 +78,55 @@ jobs:
           test "$(rustc -vV | sed -n 's/^host: //p')" = "$TARGET"
 
       - name: Build
-        run: cargo build --release --locked --manifest-path bash-gates/Cargo.toml
+        env:
+          TOOL: ${{ matrix.tool }}
+        run: cargo build --release --locked -p "$TOOL"
 
       - name: Stage asset
         env:
+          TOOL: ${{ matrix.tool }}
           TARGET: ${{ matrix.target }}
         run: |
           mkdir dist
-          cp bash-gates/target/release/bash-gates "dist/bash-gates-$TARGET"
+          cp "target/release/$TOOL" "dist/$TOOL-$TARGET"
           cd dist
-          shasum -a 256 "bash-gates-$TARGET" > "bash-gates-$TARGET.sha256"
-          shasum -a 256 -c "bash-gates-$TARGET.sha256"
+          shasum -a 256 "$TOOL-$TARGET" > "$TOOL-$TARGET.sha256"
+          shasum -a 256 -c "$TOOL-$TARGET.sha256"
 
       - uses: actions/upload-artifact@v7.0.2
         with:
-          name: bash-gates-${{ matrix.target }}
+          name: ${{ matrix.tool }}-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
 
   # contents: write はこの job だけに付ける。checkout せず、build の成果物だけを扱う
   upload:
-    needs: build
+    needs: [plan, build]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     # tag を消して作り直すと、同じ draft に 2 つの run が届く。一方の --clobber の途中で他方が公開すると、asset 不足のまま確定する。draft の確認から公開までを tag ごとに直列にする
     concurrency:
-      group: bash-gates-release-${{ github.ref_name }}
+      group: release-${{ github.ref_name }}
       cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       TAG: ${{ github.ref_name }}
+      ASSETS: ${{ needs.plan.outputs.assets }}
     steps:
       - uses: actions/download-artifact@v8.0.2
         with:
           path: dist
           merge-multiple: true
 
-      # build の job から受け取った後でも sha256 が合うことを確かめる。asset は 2 target 分の 4 ファイルのはず
+      # build の job から受け取った後でも sha256 が合うことを確かめる。asset は 1 tool の全 target 分 (plan が数えた ASSETS 個) のはず
       - name: Verify checksums
         working-directory: dist
         run: |
           files=(*)
-          test "${#files[@]}" -eq 4
+          test "${#files[@]}" -eq "$ASSETS"
           for f in *.sha256; do shasum -a 256 -c "$f"; done
 
       # tagpr が draft を作るのは tag の push より後。build の間に作られるはずだが、遅れても待つ (最大 5 分)
@@ -108,13 +142,21 @@ jobs:
           # 認証・権限・rate limit の失敗も「まだ無い」と同じ空の state になるので、最後の stderr を残して切り分けられるようにする
           test "$state" = true || { cat "$RUNNER_TEMP/gh-err" >&2; echo "release $TAG is not a draft (isDraft: ${state:-not found})" >&2; exit 1; }
 
+      # tag を作り直した後に古い run が届いても、別の commit の binary を載せないよう、tag がこの run の build した commit を指していることを確かめる
+      - name: Check tag target
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          target=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)
+          test "$target" = "$SHA" || { echo "tag $TAG points to $target, but this run built $SHA" >&2; exit 1; }
+
       # draft は公開前で asset を差し替えられるので --clobber を付ける。途中で失敗した run の再実行で、残った asset を置き換える
-      # 4 ファイルは 1 回の run の build から出たもので、公開までに混ざらない
+      # asset は 1 回の run の build から出たもので、公開までに混ざらない
       - name: Upload assets
         run: gh release upload "$TAG" dist/* --clobber
 
       - name: Check assets
-        run: test "$(gh release view "$TAG" --json assets --jq '.assets | length')" -eq 4
+        run: test "$(gh release view "$TAG" --json assets --jq '.assets | length')" -eq "$ASSETS"
 
       # upload と確認が全部済んでから公開する。ここで初めて immutable になる
       - name: Publish

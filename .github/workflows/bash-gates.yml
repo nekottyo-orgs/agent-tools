@@ -1,4 +1,5 @@
 # bash-gates/ の build と回帰テスト。tool ごとに workflow を分け、path filter で他の tool の変更では走らせない。
+# workspace の root の Cargo.toml (release profile) と Cargo.lock は全 tool に効くので、変更されたら走らせる。
 # toolchain の version (Rust 1.98 / Lean v4.35.0 / elan v4.2.4) は手元の検証と同じ値に固定する。elan は release asset の sha256 でも固定する。
 # action は .github/workflows/actions.lock に固定する (gh actions-lock で更新)。uses を tag 表記で書くのは、lockfile が commit と repo の identity を固定するため。
 name: bash-gates
@@ -7,11 +8,15 @@ on:
   push:
     paths:
       - 'bash-gates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/bash-gates.yml'
       - '.github/workflows/actions.lock'
   pull_request:
     paths:
       - 'bash-gates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/bash-gates.yml'
       - '.github/workflows/actions.lock'
 
@@ -45,8 +50,8 @@ jobs:
       # テスト script は --offline でビルドするので、依存は先に取っておく
       - name: Build
         run: |
-          cargo fetch --locked --manifest-path bash-gates/Cargo.toml
-          cargo build --release --locked --manifest-path bash-gates/Cargo.toml
+          cargo fetch --locked
+          cargo build --release --locked -p bash-gates
 
       - name: Test
         run: bash bash-gates/tests/bash-gates.test.sh
