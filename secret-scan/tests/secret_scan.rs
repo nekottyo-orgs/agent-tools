@@ -966,6 +966,38 @@ fn unreadable_stdin_exits_2() {
     assert_eq!(o.status.code(), Some(2), "stdout={}", String::from_utf8_lossy(&o.stdout));
 }
 
+// 走査に失敗したときは、失敗の種類を stderr の `secret-scan: error=<token>` の 1 行で出す。呼び出し側がログに残して、原因を数えられるようにする。
+// stdout は空のまま (偽の「検出なし」を出さない契約を変えない)。token は固定の短い語で、入力の断片や path を含めない
+#[test]
+fn failure_reports_machine_readable_token() {
+    if reference_mode() {
+        return;
+    }
+    let t = Tmp::new();
+    let p = t.file("policy.json", &policy_json().to_string());
+    let bad_policy = t.file("bad.json", "[]");
+    // 入力の断片が token に混ざらないことを見るための目印。実行時に組み立てる
+    let marker = ["ctx", "marker", "value"].concat();
+    let invalid_utf8 = b"+++ b/f.md\n@@ -0,0 +1 @@\n+\xff\xfe\n".to_vec();
+    let bad_header = format!("+++ b/f.md\n@@ -1x +1 @@ {marker}\n+x\n").into_bytes();
+    let cases: Vec<(&str, Out, &str)> = vec![
+        ("引数が足りない", run_cli(&[], b""), "bad_arguments"),
+        ("policy が object でない", scan(&bad_policy, "example/repo", b""), "bad_policy"),
+        ("policy が読めない", scan(&t.0.join("none.json"), "example/repo", b""), "bad_policy"),
+        ("不正な UTF-8", scan(&p, "example/repo", invalid_utf8), "invalid_utf8"),
+        ("読めない hunk header", scan(&p, "example/repo", bad_header), "bad_hunk_header"),
+    ];
+    let ng: Vec<String> = cases
+        .iter()
+        .filter_map(|(desc, out, token)| {
+            let line = format!("secret-scan: error={token}");
+            let ok = out.code == Some(2) && out.stdout.is_empty() && out.stderr.lines().any(|l| l == line) && !out.stderr.contains(&marker);
+            (!ok).then(|| format!("  NG {desc}: exit {:?} stdout={:?} stderr={:?}", out.code, out.stdout, out.stderr))
+        })
+        .collect();
+    assert!(ng.is_empty(), "{} 件失敗\n{}", ng.len(), ng.join("\n"));
+}
+
 #[test]
 fn identifier_values_are_not_masked() {
     let t = Tmp::new();

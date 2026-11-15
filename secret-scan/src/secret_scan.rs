@@ -398,29 +398,30 @@ fn emit(v: &Value) {
     let _ = out.flush();
 }
 
+// 走査に失敗したときは、失敗の種類を `secret-scan: error=<token>` の 1 行で stderr に出して exit 2 にする。
+// 呼び出し側が構造化ログの reason に使う。token は固定の短い語で、入力の断片や path を含めない (detail は人が読む用で、別の行に出す)。
+// stdout には何も出さない。偽の「検出なし」を呼び出し側が読む経路を作らないため
+// token: bad_arguments / bad_policy / stdin_read_failed / invalid_utf8 / bad_hunk_header / internal_error (main.rs の panic)
+pub fn fail(token: &str, detail: &str) -> i32 {
+    eprintln!("secret-scan: error={token}");
+    eprintln!("{detail}");
+    2
+}
+
 pub fn run(args: Vec<String>) -> i32 {
     let (policy_path, repo) = match parse_args(&args) {
         Ok(x) => x,
-        Err(e) => {
-            eprintln!("secret-scan: {e}");
-            return 2;
-        }
+        Err(e) => return fail("bad_arguments", &format!("secret-scan: {e}")),
     };
     let policy = match load_policy(&policy_path) {
         Ok(p) => p,
-        Err(e) => {
-            eprintln!("policy load failed: {e}");
-            return 2;
-        }
+        Err(e) => return fail("bad_policy", &format!("policy load failed: {e}")),
     };
     let repos = match policy.get("repos") {
         None => None,
         Some(r) => match r.as_object() {
             Some(o) => Some(o),
-            None => {
-                eprintln!("policy load failed: repos must be an object");
-                return 2;
-            }
+            None => return fail("bad_policy", "policy load failed: repos must be an object"),
         },
     };
     let conf = match repos.and_then(|r| r.get(&repo)) {
@@ -430,41 +431,28 @@ pub fn run(args: Vec<String>) -> i32 {
             return 0;
         }
         Some(Value::Object(c)) => c,
-        Some(_) => {
-            eprintln!("policy load failed: repos[{repo}] must be an object");
-            return 2;
-        }
+        Some(_) => return fail("bad_policy", &format!("policy load failed: repos[{repo}] must be an object")),
     };
     let (exempts, entropy) = match (parse_exempts(conf), Entropy::from_policy(policy.get("entropy"))) {
         (Ok(x), Ok(e)) => (x, e),
-        (Err(e), _) | (_, Err(e)) => {
-            eprintln!("policy load failed: {e}");
-            return 2;
-        }
+        (Err(e), _) | (_, Err(e)) => return fail("bad_policy", &format!("policy load failed: {e}")),
     };
     let rules = secret_rules::build(&entropy);
 
     let mut input = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut input) {
         // 読めた分だけ走査して scanned:true を返すと、途中までの走査が完全な走査に見える
-        eprintln!("failed to read stdin: {e}");
-        return 2;
+        return fail("stdin_read_failed", &format!("failed to read stdin: {e}"));
     }
     // 不正な byte を U+FFFD に置き換えて走査すると、値の長さと文字の散らばりが変わり、エントロピーなどの閾値を割って
     // 検出が外れる (fail-open)。置き換えず、走査できなかったものとして呼び出し側に deny させる
     let diff = match std::str::from_utf8(&input) {
         Ok(d) => d,
-        Err(e) => {
-            eprintln!("stdin is not valid UTF-8 (byte {})", e.valid_up_to());
-            return 2;
-        }
+        Err(e) => return fail("invalid_utf8", &format!("stdin is not valid UTF-8 (byte {})", e.valid_up_to())),
     };
     let added = match added_lines(diff) {
         Ok(a) => a,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
+        Err(e) => return fail("bad_hunk_header", &e),
     };
 
     let mut findings = Vec::new();

@@ -26,6 +26,7 @@ commit と投稿の gate が使う secret 検出器は、Python 3 の単体 scri
   - 行に `secret-scan-gate:allow` を含む追加行は、全ルールの対象から外す (行内の除外)
 - stdout に `{"findings":[{"file","line","class","rule","value"}],"scanned":bool}` を返す。`scanned` が false のときは、policy に載っていない (または null の) repo
 - exit 0 は走査完了 (検出の有無は stdout を見る)、exit 2 は引数・対象 repo の policy の不正、stdin の読み取り失敗、stdin が UTF-8 でない、hunk header が読めない。exit 2 のときは stdout に何も出さない
+  - 失敗の種類は、stderr に `secret-scan: error=<token>` の 1 行で出す。呼び出し側が構造化ログに残して原因を数えるため。token は `bad_arguments`、`bad_policy`、`stdin_read_failed`、`invalid_utf8`、`bad_hunk_header`、`internal_error` (panic) の 6 つで、入力の断片や path を含まない。JSON の `error` にしなかったのは、stdout を空に保つ契約を崩さないため。終了コードを見ずに stdout の `findings` を数える呼び出しが、失敗を 0 件と読む経路を作らない。token 行の次の行に、人が読む詳細が付く (policy の読み込みの失敗などは、その内容を含みうる)
 - credential 系の `value` は、7 文字以上なら先頭 6 文字と `…`、6 文字以下なら `…` だけを返し、検出した秘密の全体を報告に再掲しない。credential の一致に重なる別 class の検出 (接続文字列の password をメールの形として拾う、など) は、値の一部も出さず `…` だけを返す。重なりは credential の一致全体で見るので、一致が host まで含む接続文字列 (jdbc など) では、host の IP やメールの値も `…` になる。検出の有無・位置・rule は残る
 
 呼び出し側は、`scanned` が true で `findings` が配列のときだけ結果を信用する。subcommand を持たない古い binary は、exit 0 で stdout が空になる。その場合も検出なしとみなさず、呼び出し側の fail の向き (deny) に倒す。
