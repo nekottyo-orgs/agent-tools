@@ -3,6 +3,7 @@
 コーディングエージェント (Claude Code など) の運用で使う小さな tool を、tool ごとのディレクトリにまとめる repo。
 
 - tool ごとにディレクトリを分け、build と test の workflow は `.github/workflows/<tool>.yml` に置いて path filter で絞る
+- Release の workflow は `.github/workflows/release.yml` の 1 本で、tag の prefix (`<tool>/v*`) からどの tool を build するかを決める。tool を足すときは、この workflow の tag の glob と plan job の tools を足す
 - release は tagpr で tool ごとに行い、tag は `<tool>/v<version>` 形式 (例: `bash-gates/v0.1.0`)
 - tool は 1 つの Cargo workspace (root の `Cargo.toml`) の member。build の出力は root の `target/` に出る
 
