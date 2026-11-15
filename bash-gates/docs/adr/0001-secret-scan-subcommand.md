@@ -1,9 +1,14 @@
 # 0001: secret-scan を bash-gates の subcommand にする
 
+- 状態: 採用。のちに別 binary に分けた ([追補: 別 binary に分けた](#追補-別-binary-に分けた))。入出力の契約は今も有効
+- 日付: 2026-11-15
+
+> この ADR は雛形 (`docs/adr/template.md`) の規則より前に書いた。追補を積む形と、置き場が secret-scan でなく bash-gates の下にあることは、そのまま残す。
+
 > 追補 (2026-11-15): `secret-scan` は別 binary に分けた (末尾の「追補: 別 binary に分けた」)。本文の `bash-gates secret-scan <引数>` は、`secret-scan <引数>` と読み替える。入出力の契約・正規表現・`is_global`・policy は変わらない。分けたあとに、読めない入力の扱いと diff の読み方を変えた (「読めない入力は走査の失敗にする」と「漏れ検証で見つかった差と修正」)。「dispatcher より前で分岐する」の節は、分岐そのものが無くなったので該当しない。
 > ファイル名と場所は、他の文書や取り込み側がこの path を参照しているので変えていない。
 
-## 状況
+## 背景
 
 commit と投稿の gate が使う secret 検出器は、Python 3 の単体 script だった。次の問題があった。
 
