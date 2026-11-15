@@ -10,5 +10,5 @@
     postVersionCommand = cargo update --workspace --manifest-path secret-scan/Cargo.toml
     changelogFile = secret-scan/CHANGELOG.md
     releaseYAMLPath = secret-scan/.github/release.yml
-    # immutable releases は公開後に asset を足せない。draft で作らせ、secret-scan-release.yml が asset を載せてから公開する
+    # immutable releases は公開後に asset を足せない。draft で作らせ、release.yml が asset を載せてから公開する
     release = draft

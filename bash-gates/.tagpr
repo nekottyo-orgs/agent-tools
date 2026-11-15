@@ -10,5 +10,5 @@
     postVersionCommand = cargo update --workspace --manifest-path bash-gates/Cargo.toml
     changelogFile = bash-gates/CHANGELOG.md
     releaseYAMLPath = bash-gates/.github/release.yml
-    # immutable releases は公開後に asset を足せない。draft で作らせ、bash-gates-release.yml が asset を載せてから公開する
+    # immutable releases は公開後に asset を足せない。draft で作らせ、release.yml が asset を載せてから公開する
     release = draft
