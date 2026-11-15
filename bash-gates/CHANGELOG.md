@@ -1,6 +1,6 @@
 # Changelog
 
-## [v0.1.3](https://github.com/nekottyo/agent-tools/compare/bash-gates/v0.1.2...bash-gates/v0.1.3) - 2026-11-15
+## [v0.2.0](https://github.com/nekottyo/agent-tools/compare/bash-gates/v0.1.2...bash-gates/v0.2.0) - 2026-11-15
 
 ### Changes
 - chore: CodeRabbit の author approval コマンドを無効にする by @nekottyo in https://github.com/nekottyo/agent-tools/pull/11
