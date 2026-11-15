@@ -142,6 +142,14 @@ jobs:
           # 認証・権限・rate limit の失敗も「まだ無い」と同じ空の state になるので、最後の stderr を残して切り分けられるようにする
           test "$state" = true || { cat "$RUNNER_TEMP/gh-err" >&2; echo "release $TAG is not a draft (isDraft: ${state:-not found})" >&2; exit 1; }
 
+      # tag を作り直した後に古い run が届いても、別の commit の binary を載せないよう、tag がこの run の build した commit を指していることを確かめる
+      - name: Check tag target
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          target=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)
+          test "$target" = "$SHA" || { echo "tag $TAG points to $target, but this run built $SHA" >&2; exit 1; }
+
       # draft は公開前で asset を差し替えられるので --clobber を付ける。途中で失敗した run の再実行で、残った asset を置き換える
       # asset は 1 回の run の build から出たもので、公開までに混ざらない
       - name: Upload assets

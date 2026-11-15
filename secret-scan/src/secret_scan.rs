@@ -305,7 +305,8 @@ fn take_range(s: &str) -> Option<(u64, u64, &str)> {
 // 桁数に上限が無いので、u64 を超える count や全角の数字を持つ header は hunk として読めるが、git はどちらも出さない。
 // 同じ読み方を再現するより、読めないと認めて止める方が安全側に倒れる
 fn hunk_header(raw: &str) -> Result<(u64, u64, u64), String> {
-    let bad = || format!("unreadable hunk header: {}", raw.chars().take(60).collect::<String>());
+    // header 行の後ろには git が関数名などの文脈を付ける。秘密が入りうるので、stderr に出す理由には行の内容を含めない
+    let bad = || "unreadable hunk header".to_string();
     let (_, old, rest) = raw.strip_prefix("@@ -").and_then(take_range).ok_or_else(bad)?;
     let (start, new, rest) = rest.strip_prefix(" +").and_then(take_range).ok_or_else(bad)?;
     if !rest.starts_with(" @@") {

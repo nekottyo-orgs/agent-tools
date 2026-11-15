@@ -829,6 +829,12 @@ fn unreadable_hunk_header_exits_2() {
         })
         .collect();
     assert!(ng.is_empty(), "{} 件失敗\n{}", ng.len(), ng.join("\n"));
+
+    // header 行の後ろには、git が関数名などの文脈を付ける。そこに秘密が入りうるので、読めない理由を stderr に出すときも内容は出さない
+    let marker = ["ctx", "marker", "value"].concat();
+    let out = scan(&policy, "example/repo", format!("+++ b/f.md\n@@ -1x +1 @@ {marker}\n+x\n").as_str());
+    assert_eq!(out.code, Some(2));
+    assert!(!out.stderr.contains(&marker), "header の内容が stderr に出ている: {}", out.stderr);
 }
 
 // ---------------------------------------------------------------------------
