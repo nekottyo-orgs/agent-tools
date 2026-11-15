@@ -5,3 +5,5 @@ reviews:
   # request_changes_workflow は deprecated な旧名なので使わない
   auto_approvals:
     enabled: true
+    # PR の author が自分の PR で @coderabbitai approve / resolve を打てないようにする
+    allow_author_approval: false
