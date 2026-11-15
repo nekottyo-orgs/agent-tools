@@ -45,7 +45,7 @@ Bash の PreToolUse gate 群を 1 つのプロセス `bash-gates` で受ける�
 | dispatcher の panic | deny |
 | 子が exit 2 | deny。理由は子の stderr |
 | 子が 0 と 2 以外の非 0 で終わる | 素通り |
-| 子の出力が JSON として読めない | 素通り |
+| 子が exit 0 で、出力が JSON として読めない | 素通り |
 | 子の timeout | 素通り。子は SIGKILL で止める |
 | 子が signal で終わる (timeout 以外) | 素通り。終了コードが取れないため |
 
@@ -126,7 +126,7 @@ A〜G は、`src/main.rs` のコメントにある理由から起こした案で
 
 ### 悪い面
 
-- 子が 0 と 2 以外の非 0 で終わる、出力が壊れている、timeout する、のどれでも素通りになる。その子の gate は、その回は効果を持たない
+- 子が 0 と 2 以外の非 0 で終わる、exit 0 で出力が壊れている、timeout する、のどれでも素通りになる。その子の gate は、その回は効果を持たない
 - exec が失敗すると、source より古い binary の判定で通る
 - spawn・timeout・kill・stale 時の exec・JSON の解釈は、Lean のモデルでは確かめていない。cargo が無い環境では、回帰テストのうち binary を使う検査が skip される
-- command 全文が一時領域のファイルに書かれる (0700 で作り、終わったら消す)
+- command 全文が一時領域のファイルに書かれる。一時領域は 0700 で作り、終わったら消そうとするが、消える保証は無い。子を待つ thread を作れずに panic すると片付けまで届かず、消すときのエラーも無視する
