@@ -1,6 +1,6 @@
 # 0001: secret-scan を bash-gates の subcommand にする
 
-> 追補 (2026-11-15): `secret-scan` は別 binary に分けた (末尾の「追補: 別 binary に分けた」)。本文の `bash-gates secret-scan <引数>` は、`secret-scan <引数>` と読み替える。入出力の契約・正規表現・`is_global`・policy・不正な UTF-8 の扱いは変わらない。「dispatcher より前で分岐する」の節は、分岐そのものが無くなったので該当しない。
+> 追補 (2026-11-15): `secret-scan` は別 binary に分けた (末尾の「追補: 別 binary に分けた」)。本文の `bash-gates secret-scan <引数>` は、`secret-scan <引数>` と読み替える。入出力の契約・正規表現・`is_global`・policy は変わらない。分けたあとに、読めない入力の扱いと diff の読み方を変えた (「読めない入力は走査の失敗にする」と「漏れ検証で見つかった差と修正」)。「dispatcher より前で分岐する」の節は、分岐そのものが無くなったので該当しない。
 > ファイル名と場所は、他の文書や取り込み側がこの path を参照しているので変えていない。
 
 ## 状況
@@ -71,19 +71,19 @@ binary と public repo が持つのは、vendor 共通の形のルールだけ�
 
 次の入力は、読めたことにして走査を続けず、exit 2 で止める。呼び出し側は exit 2 を fail-close (deny) として扱う。
 
-- 不正な UTF-8: 当初は U+FFFD に置き換えて走査していた。置き換えると、値の長さと文字の散らばりが変わる。DB の接続文字列の password の位置に不正な byte があると、エントロピーと長さが閾値を割って検出が外れた。従来の Python 実装も UTF-8 の locale では例外終了で、呼び出し側は deny していたので、deny という結果は変わらない。代償として、UTF-8 でない text file を追加する commit は止まる (行内の pragma では外せない)。許可が要る commit は、呼び出し側の bypass の手順に従う
+- 不正な UTF-8: 当初は U+FFFD に置き換えて走査していた。置き換えると、値の長さと文字の散らばりが変わる。DB の接続文字列の password の位置に不正な byte があると、エントロピーと長さが閾値を割って検出が外れた。従来の Python 実装も UTF-8 の locale では例外終了で、呼び出し側は deny していたので、deny という結果は変わらない。stdin 全体を見るので、不正な byte が削除行 (`-`) にだけある diff も止まる。代償として、UTF-8 でない text file を追加する commit に加え、そのような file を直す・消す commit も止まる (行内の pragma では外せない)。追加行だけに絞って止まる範囲を狭めるかどうかは、決めていない。許可が要る commit は、呼び出し側の bypass の手順に従う
 - 読めない hunk header: 壊れた形、全角など ASCII でない数字、u64 を超える count。0 行の hunk として流すと、続く `+++ ` で始まる追加行を file header と取り違え、その行は検査されない。従来の Python 実装は全角の数字も int に直し、桁数に上限が無いので、これらの header を hunk として読む。git はどちらも出さないので、同じ読み方を再現せず、読めないと認めて止める
   - header を読むのは hunk の外にいるときと、hunk の途中で行数が合わず次の header が来たとき。hunk の中の行は内容として読むので、追加行の内容が `@@` で始まっても止まらない
 
-hunk の外の `+++` で始まる行は、直後が空白なら file header、空白でなければ追加行として読む。slack の投稿を diff に包む形では、本文の 2 行目以降がこの位置に来るので、header と取り違えると本文が検査されない。
+hunk の外の `+++` で始まる行は、直後が空白なら file header、空白でなければ追加行として読む。呼び出し側が本文を diff に包む形では、本文の 2 行目以降がこの位置に来るので、header と取り違えると本文が検査されない。
 
 file header の `/dev/null` かどうかは、quote や tab を戻す前の文字列で決める。git は `/dev/null` をそのまま出すので、`"/dev/null"` や `/dev/null<tab>x` は別名の file として走査する。従来の実装と同じ判定で、git が出さない形に対して検出を減らさない。
 
 ## 検証
 
 - 従来の Python 実装と同じ入力に当て、出力 (JSON を正規化したもの) と exit code を比べた
-  - 約 10 万ケース (801 file)。609 file が一致し、192 file は意図した差 (下記)。全 35 ルールと、各ルールの境界値・文字種の変異・diff の形・policy の除外を含む。値はすべて実行時に連結して作った合成値
-  - 差の 192 file は次の 5 つ。不正な UTF-8 の 4 file を除き、検出した class と rule の組の件数は全 file で同じ
+  - 約 10 万ケース (801 file)。分けた時点の Rust 実装では、609 file が一致し、192 file に差があった。全 35 ルールと、各ルールの境界値・文字種の変異・diff の形・policy の除外を含む。値はすべて実行時に連結して作った合成値
+  - 差の 192 file は次の 5 つ。うち 173 file と、path の扱いが違う 3 file、行番号だけの差の 1 file は意図した差で、不正な UTF-8 の 4 file と hunk header の 11 file は、検出の有無が変わる入力を含んでいたので修正した (下の「漏れ検証で見つかった差と修正」)
     - 別 class の検出が credential の一致に重なり、値が `…` だけになる入力 (173 file)。検出の有無・位置・rule は同じで、`value` だけが違う
     - hunk header の形が壊れている、または Unicode の数字や u64 に収まらない大きさの数字がある入力 (11 file)。行番号だけの差ではない。Python は header を読めたものとして続き、Rust は 0 行の hunk として流すので、続く `+++ ` 始まりの追加行の扱いが割れ、検出の有無が変わる入力があった (漏れ検証で見つかった)。修正後は、Rust が exit 2 で止める
     - file header の path に、tab 以降の文字列、前後の空白、quote がある入力 (3 file)。Rust 側は tab の手前までを path とし、空白は残し、quote は戻した file 名にする
@@ -95,7 +95,7 @@ file header の `/dev/null` かどうかは、quote や tab を戻す前の文�
 
 ## 追補: 別 binary に分けた
 
-`secret-scan` を `bash-gates` の subcommand から、同じ repo・同じ Cargo workspace の別 crate (`secret-scan/`) と別 binary に分けた。コードは移しただけで、検出の挙動は変えていない。
+`secret-scan` を `bash-gates` の subcommand から、同じ repo・同じ Cargo workspace の別 crate (`secret-scan/`) と別 binary に分けた。分けた時点のコードは移しただけで、検出の挙動は変えていない。そのあとの修正は「漏れ検証で見つかった差と修正」に書いた。
 
 ### 比べた案
 
@@ -135,5 +135,3 @@ A を採らない理由は上の 3 点。C を今は採らない理由は、`bas
 | u64 を超える count、全角の数字、壊れた hunk header | 0 行の hunk として流し、続く `+++ ` 始まりの追加行を file header と読む | exit 2 |
 | hunk の外の `+++x`、`+++` だけの行 | 捨てる | 追加行として走査 (従来の実装と同じ) |
 | `+++ "/dev/null"`、`+++ /dev/null<tab>x` | 追跡しない | 別名の file として走査 (従来の実装と同じ。path の表記は quote と tab を戻した形になり、従来の実装とは違う) |
-
-従来の実装も見逃す入力 (行頭の `\r` や、`\r` だけで改行した差分など) は、この追補の対象にしていない。
