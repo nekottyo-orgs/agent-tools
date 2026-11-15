@@ -3,10 +3,10 @@
 - 状態: 採用。のちに別 binary に分けた ([追補: 別 binary に分けた](#追補-別-binary-に分けた))。入出力の契約は今も有効
 - 日付: 2026-11-15
 
-> この ADR は雛形 (`docs/adr/template.md`) の規則より前に書いた。追補を積む形と、置き場が secret-scan でなく bash-gates の下にあることは、そのまま残す。
+> この ADR は雛形 (`docs/adr/template.md`) の規則より前に書いたので、追補を積む形のまま残す。secret-scan を別 crate に分けたので、置き場を `bash-gates/docs/adr/` から `secret-scan/docs/adr/` に移した。
 
 > 追補 (2026-11-15): `secret-scan` は別 binary に分けた (末尾の「追補: 別 binary に分けた」)。本文の `bash-gates secret-scan <引数>` は、`secret-scan <引数>` と読み替える。入出力の契約・正規表現・`is_global`・policy は変わらない。分けたあとに、読めない入力の扱いと diff の読み方を変えた (「読めない入力は走査の失敗にする」と「漏れ検証で見つかった差と修正」)。「dispatcher より前で分岐する」の節は、分岐そのものが無くなったので該当しない。
-> ファイル名と場所は、他の文書や取り込み側がこの path を参照しているので変えていない。
+> dispatcher (`bash-gates`) 側の設計は [bash-gates の ADR 0001](../../../bash-gates/docs/adr/0001-dispatcher.md) にある。
 
 ## 背景
 
