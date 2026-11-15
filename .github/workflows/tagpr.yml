@@ -9,6 +9,8 @@
 # tagpr は release PR を作る単位で、その tool の変更かどうかを path では見ない (前回の tag 以降に merge した PR を全部数える)。
 # push の trigger を tool のディレクトリに絞らないと、別の tool の merge のたびにこの tool の release PR が更新される。
 # 絞っても release PR 自体は tool のディレクトリ (version file と CHANGELOG) を変えるので、merge 後の tag の作成は走る。
+# docs と markdown だけの変更では release PR を開かない。release PR の merge は version file (Cargo.toml) も変えるので、除外しても tag の作成は走る。
+# paths の否定 (!) は後ろに書いたものが前の一致を外す。push の変更が除外だけに当たるときは走らない。
 name: tagpr
 
 on:
@@ -16,6 +18,8 @@ on:
     branches: ["main"]
     paths:
       - 'bash-gates/**'
+      - '!**/docs/**'
+      - '!**/*.md'
 
 # tagpr 本体は App の token (env の GITHUB_TOKEN) で動く。この permissions が効くのは checkout が使う既定の token だけ。
 permissions:
