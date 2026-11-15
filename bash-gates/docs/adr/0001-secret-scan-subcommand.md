@@ -1,5 +1,8 @@
 # 0001: secret-scan を bash-gates の subcommand にする
 
+> 追補 (2026-11-15): `secret-scan` は別 binary に分けた (末尾の「追補: 別 binary に分けた」)。本文の `bash-gates secret-scan <引数>` は、`secret-scan <引数>` と読み替える。入出力の契約・正規表現・`is_global`・policy・不正な UTF-8 の扱いは変わらない。「dispatcher より前で分岐する」の節は、分岐そのものが無くなったので該当しない。
+> ファイル名と場所は、他の文書や取り込み側がこの path を参照しているので変えていない。
+
 ## 状況
 
 commit と投稿の gate が使う secret 検出器は、Python 3 の単体 script だった。次の問題があった。
@@ -80,3 +83,35 @@ binary と public repo が持つのは、vendor 共通の形のルールだけ�
   - IPv4 / IPv6 の予約レンジの境界値は、約 41 万行 (約 20 万のアドレスを複数の表記で) で全一致
 - `cargo test` に、検出ルールごとの「止める / 止めない」の table 駆動 test (`tests/secret_scan.rs`) を置く
 - 1 回の実行時間 (追加 2 行の diff): Python 約 32 ms、Rust 約 8.5 ms。追加 200 行の diff では Python 約 34〜41 ms、Rust 約 10〜13 ms (Python は 3.14。100 回の平均を 2 回測った範囲)
+
+## 追補: 別 binary に分けた
+
+`secret-scan` を `bash-gates` の subcommand から、同じ repo・同じ Cargo workspace の別 crate (`secret-scan/`) と別 binary に分けた。コードは移しただけで、検出の挙動は変えていない。
+
+### 比べた案
+
+| 案 | 内容 | 判断 |
+| --- | --- | --- |
+| A. subcommand のまま | `bash-gates secret-scan`。asset と release は 1 つ | 採らない |
+| B. 別 binary・同じ repo・同じ workspace | `secret-scan` を独立した crate・tag・asset にする | 採る |
+| C. 別 repo | `secret-scan` を新しい repo に出す | 今は採らない |
+
+B を採る理由は、手元で測れた次の事実による。
+
+- 依存が分かれる: dispatcher (`bash-gates`) は検出器のための `fancy-regex` を持たなくなる。`cargo tree` で数えた依存 crate は 21 から 15 (自分自身を含む) に減り、binary は約 1.9 MB から約 0.48 MB になった (macOS arm64、release build)。`secret-scan` は約 1.7 MB。dispatcher の 1 回の起動時間は、200 回の平均で 3.0 ms と 3.2 ms (分割前と後) で、差は測定のばらつきの範囲に収まる。したがって速くなった、とは言えない。起動時間を理由にはしていない
+- release が独立する: 検出ルールの追加 (Datadog など) は頻繁に起きるが、dispatcher の挙動は変わらない。subcommand のままだと、ルールを足すたびに dispatcher の release と入れ替えが起き、利用側は Bash を打つたびに起動する binary まで取り直すことになる。別 binary なら、変えた方だけが release される。tag は tool ごとに `bash-gates/vX.Y.Z` と `secret-scan/vX.Y.Z`、asset は `<tool>-<target>` と `<tool>-<target>.sha256`
+- 取り違えの経路が消える: subcommand を持たない古い `bash-gates` は、知らない引数を無視して exit 0 と空の出力を返す。呼び出し側が終了コードだけを見ると「検出 0 件」に化ける。`secret-scan` は subcommand が無く、引数なしと未知の引数 (`secret-scan secret-scan ...` のような旧い呼び方を含む) は exit 2 で、stdout に何も出さない。`tests/secret_scan.rs` の `bad_arguments_exit_2` で固定している
+- 証明の対象が混ざらない: `bash-gates/lean/` のモデルは `bash-gates` の関数だけを対象にする。検出器の変更で、その検査の入力が変わらない
+
+A を採らない理由は上の 3 点。C を今は採らない理由は、`bash-gates` と `secret-scan` が共有するコードが無く、独立した release と依存の分離は B で得られること。repo を分けると、CI・release の自動化・Release の設定 (immutable releases) と GitHub App の権限を repo ごとに持つ手間が増える。共有コードが生まれる、または権限と公開範囲を分けたくなったら再検討する。
+
+### 呼び出し側の扱い
+
+- 通過の条件は変えない。exit 0 で、stdout の `scanned` が true、`findings` が配列のときだけ結果を信用する。別 binary でも、path に別の実行ファイル (古い `bash-gates` など) が置かれていれば exit 0 と空の出力を返しうる。fail-close の gate がそれを「検出 0 件」と読むと、検査が黙って外れる。確認の費用は JSON の 1 回の検査で、残す
+- `secret-scan` は自分の古さを判定しない。`bash-gates` のように、source との新旧で入れ替えを促す経路を持たない。pin を上げても binary は自動では入れ替わらないので、取り込み側が binary の sha256 を pin と比べて取り直す
+
+### 帰結
+
+- `bash-gates` から `secret-scan` の subcommand を消した。`bash-gates secret-scan` は dispatcher として hook の JSON を読もうとするだけで、検出はしない。取り込み側は呼び出しを `secret-scan` binary に替えてから、`bash-gates` の pin を上げる
+- root の `Cargo.toml` が workspace になり、`Cargo.lock` と build の出力 (`target/`) は repo の root に移った。`[profile.release]` は workspace の root でしか効かないので、root に置いた
+- release の自動化 (tagpr) の workflow も tool ごとに分けた。tagpr は前回の tag 以降の PR を数え、path では絞らないので、push の trigger を tool のディレクトリに絞らないと、別の tool の merge で release PR が更新される
