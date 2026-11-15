@@ -38,6 +38,8 @@ commit と投稿の gate が使う secret 検出器は、Python 3 の単体 scri
 
 ### dispatcher より前で分岐する
 
+> 別 binary に分けたので、この分岐は今は無い ([0002](0002-separate-binary.md))。
+
 `secret-scan` は `main()` の先頭で分岐し、dispatcher の stale 判定・子 gate の exec・stdin の読み込みより前に抜ける。diff を stdin に渡すので、dispatcher 側が先に読んではいけない。dispatcher の起動時間は変わらない (実測 約 3.3 ms)。
 
 ### 正規表現は fancy-regex

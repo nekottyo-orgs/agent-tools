@@ -66,7 +66,7 @@ file header の `/dev/null` かどうかは、quote や tab を戻す前の文�
 | 案 | 内容 | 捨てた理由 |
 | --- | --- | --- |
 | A. subcommand のまま | `bash-gates secret-scan`。asset と release は 1 つ | 上の決定の理由のうち、依存・release・取り違えの 3 点 |
-| B. 別 binary・同じ repo・同じ workspace | `secret-scan` を独立した crate・tag・asset にする | (採用) |
+| B. 別 binary・同じ repo・同じ workspace | `secret-scan` を独立した crate・tag・asset にする | 捨てていない。この案を採った |
 | C. 別 repo | `secret-scan` を新しい repo に出す | 今は採らない。`bash-gates` と `secret-scan` が共有するコードが無く、独立した release と依存の分離は B で得られる。repo を分けると、CI・release の自動化・Release の設定 (immutable releases) と GitHub App の権限を repo ごとに持つ手間が増える。共有コードが生まれる、または権限と公開範囲を分けたくなったら再検討する |
 
 ## 影響
