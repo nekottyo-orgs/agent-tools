@@ -6,14 +6,6 @@ publish = false
 license = "MIT"
 
 [dependencies]
-fancy-regex = "0.20.2"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# Bash を打つたびに起動するので起動時間を最優先にする
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true

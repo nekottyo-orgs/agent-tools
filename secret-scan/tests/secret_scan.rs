@@ -1,4 +1,4 @@
-// `bash-gates secret-scan` (検出エンジン) の integration test。
+// `secret-scan` binary (検出エンジン) の integration test。
 //
 // Python 実装向けに書かれた test のうち、検出エンジンを直接叩く層をここへ移したもの。
 // git の staged / commit 形 / bypass / fail-close のような gate (シェル) の責務は対象外。
@@ -8,8 +8,8 @@
 // 断片に割って実行時に連結する。本体は固定 seed の疑似乱数で作る (固定なので閾値付きルールが
 // 稀に落ちることはなく、乱数列そのものはソースに現れない)。
 //
-// SECRET_SCAN_REFERENCE に実行ファイルを渡すと、bash-gates の代わりにそれを
-// `secret-scan --policy .. --repo ..` の形で呼ぶ。Python 実装に包んだ wrapper を渡せば、
+// SECRET_SCAN_REFERENCE に実行ファイルを渡すと、secret-scan の代わりにそれを
+// `--policy .. --repo ..` の形で呼ぶ。Python 実装に包んだ wrapper を渡せば、
 // このファイルの期待値が Python 実装と一致しているかを確かめられる。
 
 use serde_json::{json, Value};
@@ -35,10 +35,9 @@ fn reference_mode() -> bool {
 fn run_cli(args: &[&str], stdin: impl AsRef<[u8]>) -> Out {
     let mut cmd = match std::env::var_os("SECRET_SCAN_REFERENCE") {
         Some(p) => Command::new(p),
-        None => Command::new(env!("CARGO_BIN_EXE_bash-gates")),
+        None => Command::new(env!("CARGO_BIN_EXE_secret-scan")),
     };
     let mut child = cmd
-        .arg("secret-scan")
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -66,7 +65,7 @@ impl Tmp {
     fn new() -> Self {
         static N: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "bash-gates-secret-scan-test-{}-{}",
+            "secret-scan-test-{}-{}",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ));
@@ -882,8 +881,8 @@ fn unreadable_stdin_exits_2() {
     let t = Tmp::new();
     let p = t.file("policy.json", &policy_json().to_string());
     let dir = std::fs::File::open(std::env::temp_dir()).expect("directory を開けない");
-    let o = Command::new(env!("CARGO_BIN_EXE_bash-gates"))
-        .args(["secret-scan", "--policy", p.to_str().unwrap(), "--repo", "example/repo"])
+    let o = Command::new(env!("CARGO_BIN_EXE_secret-scan"))
+        .args(["--policy", p.to_str().unwrap(), "--repo", "example/repo"])
         .stdin(Stdio::from(dir))
         .output()
         .expect("起動に失敗");
@@ -972,6 +971,8 @@ fn bad_arguments_exit_2() {
         ("--policy が無い", vec!["--repo", "example/repo"]),
         ("--repo の値が無い", vec!["--policy", p, "--repo"]),
         ("未知の引数", vec!["--policy", p, "--repo", "example/repo", "--unknown", "1"]),
+        // bash-gates の subcommand だった頃の呼び方。取り違えた呼び出し側が検出 0 件に化けないこと
+        ("subcommand 形", vec!["secret-scan", "--policy", p, "--repo", "example/repo"]),
     ];
     let ng: Vec<String> = cases
         .iter()

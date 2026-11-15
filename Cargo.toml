@@ -1,0 +1,12 @@
+# tool ごとの crate をまとめる workspace。version と tag (`<tool>/vX.Y.Z`) は tool ごとに tagpr で独立して上げる。
+# [profile.release] は workspace の root でしか効かない (member 側に書くと無視される) ので、ここに置く。
+[workspace]
+resolver = "2"
+members = ["bash-gates", "secret-scan"]
+
+# bash-gates は Bash を打つたびに起動するので起動時間を最優先にする。secret-scan も commit のたびに起動する
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

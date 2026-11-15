@@ -1,5 +1,5 @@
 // 目的: git の unified diff を stdin で受け、commit される追加行から実環境の識別子と
-//       credential を検出して JSON で返す (`bash-gates secret-scan` subcommand)。
+//       credential を検出して JSON で返す (`secret-scan` binary)。
 //       判定と deny は呼び出し側 (シェル) の責務で、ここは「何がどこで見つかったか」だけを返す。
 //       hooks/_shared/secret-scan.py の Rust 移植で、検出の有無・位置・rule が揃うようにする。
 //       揃えない箇所 (value の伏せ字、hunk header の数字、file header の path、不正な UTF-8 など) は
@@ -19,7 +19,7 @@
 //   - policy の形が想定と違うときは黙って通さず exit 2 にする。素通りは fail-open になる
 //   - 値は credential 系 class では先頭 6 文字だけ残して報告する (transcript とログに秘密の全体を残さない)
 //
-// 使い方: git diff --cached --unified=0 | bash-gates secret-scan --policy <path> --repo owner/name
+// 使い方: git diff --cached --unified=0 | secret-scan --policy <path> --repo owner/name
 //
 // 終了コード: 0 = 走査完了 (検出の有無は stdout の JSON)。2 = 引数不正・policy 読み込み失敗・stdin の読み取り失敗 (呼び出し側は fail-close で扱う)
 

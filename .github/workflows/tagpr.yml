@@ -1,4 +1,4 @@
-# release の自動化 (https://github.com/Songmu/tagpr)。tool ごとに設定を分け、bash-gates は bash-gates/.tagpr で動かす。
+# release の自動化 (https://github.com/Songmu/tagpr)。tool ごとに workflow と設定を分け、bash-gates は bash-gates/.tagpr で動かす (secret-scan は tagpr-secret-scan.yml)。
 # 前提: GitHub App を repo に install し、App の Client ID を repository variable の APP_CLIENT_ID、
 #       private key を repository secret の APP_PRIVATE_KEY に置く。
 #       App の権限は Contents / Pull requests を Read and write、Issues を Read-only 以上にする。
@@ -6,11 +6,16 @@
 # action は supply chain 対策で .github/workflows/actions.lock に固定する (gh actions-lock で更新)。
 # uses は tag 表記で書く。lockfile が commit と repo の identity (owner_id / repo_id) を固定するので SHA の直書きは要らない。
 # 更新と検証: gh actions-lock / gh actions-lock --verify-local
+# tagpr は release PR を作る単位で、その tool の変更かどうかを path では見ない (前回の tag 以降に merge した PR を全部数える)。
+# push の trigger を tool のディレクトリに絞らないと、別の tool の merge のたびにこの tool の release PR が更新される。
+# 絞っても release PR 自体は tool のディレクトリ (version file と CHANGELOG) を変えるので、merge 後の tag の作成は走る。
 name: tagpr
 
 on:
   push:
     branches: ["main"]
+    paths:
+      - 'bash-gates/**'
 
 # tagpr 本体は App の token (env の GITHUB_TOKEN) で動く。この permissions が効くのは checkout が使う既定の token だけ。
 permissions:

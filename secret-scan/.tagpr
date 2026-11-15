@@ -1,0 +1,14 @@
+# secret-scan の release 設定。tool ごとに tagpr の設定を分ける (config: secret-scan/.tagpr)。
+# tag は `secret-scan/v<version>` になる (tagPrefix は / 区切りになる仕様)。
+# パスは tagpr の作業 dir (repo root) 起点で書く。
+[tagpr]
+    releaseBranch = main
+    tagPrefix = secret-scan
+    vPrefix = true
+    versionFile = secret-scan/Cargo.toml
+    # release PR の CI は --locked で build するので、version を上げたら Cargo.lock も追従させる。lock は workspace の root にある
+    postVersionCommand = cargo update --workspace --manifest-path secret-scan/Cargo.toml
+    changelogFile = secret-scan/CHANGELOG.md
+    releaseYAMLPath = secret-scan/.github/release.yml
+    # immutable releases は公開後に asset を足せない。draft で作らせ、secret-scan-release.yml が asset を載せてから公開する
+    release = draft

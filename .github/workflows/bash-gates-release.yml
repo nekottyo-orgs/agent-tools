@@ -48,14 +48,14 @@ jobs:
           test "$(rustc -vV | sed -n 's/^host: //p')" = "$TARGET"
 
       - name: Build
-        run: cargo build --release --locked --manifest-path bash-gates/Cargo.toml
+        run: cargo build --release --locked -p bash-gates
 
       - name: Stage asset
         env:
           TARGET: ${{ matrix.target }}
         run: |
           mkdir dist
-          cp bash-gates/target/release/bash-gates "dist/bash-gates-$TARGET"
+          cp target/release/bash-gates "dist/bash-gates-$TARGET"
           cd dist
           shasum -a 256 "bash-gates-$TARGET" > "bash-gates-$TARGET.sha256"
           shasum -a 256 -c "bash-gates-$TARGET.sha256"
