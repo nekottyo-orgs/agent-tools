@@ -1,7 +1,7 @@
 // 目的: git の unified diff を stdin で受け、commit される追加行から実環境の識別子と
 //       credential を検出して JSON で返す (`secret-scan` binary)。
 //       判定と deny は呼び出し側 (シェル) の責務で、ここは「何がどこで見つかったか」だけを返す。
-//       hooks/_shared/secret-scan.py の Rust 移植で、検出の有無・位置・rule が揃うようにする。
+//       従来の Python 実装の Rust 移植で、検出の有無・位置・rule が揃うようにする。
 //       揃えない箇所 (value の伏せ字、hunk header の数字、file header の path、不正な UTF-8 など) は
 //       ADR 0001 に載せている。
 //
@@ -270,7 +270,7 @@ pub fn shannon_entropy(value: &str) -> f64 {
 }
 
 // diff の行は `\n` だけで分ける。git が行を区切るのは `\n` だけで、`\x0c` や U+2028 などは
-// 行の内容の一部。従来の実装 (hooks/_shared/secret-scan.py の現行版) も `\n` で分ける。
+// 行の内容の一部。従来の実装も `\n` で分ける。
 // splitlines() のように、これらを区切りにすると、1 つの追加行が複数の断片に割れて、
 // hunk の行数の勘定が狂い、内容の断片が header と読まれてしまう。
 // CRLF の改行の `\r` は行の内容に含めない。末尾の空行は作らない
@@ -301,7 +301,7 @@ fn take_range(s: &str) -> Option<(u64, u64, &str)> {
 
 // `@@ -a,b +c,d @@` の (c, b, d)。hunk の外で読めない header は Err にして、呼び出し側で走査の失敗にする。
 // 読めないものを 0 行の hunk として流すと、続く `+++ ` 始まりの追加行を file header と取り違え、
-// 値が検査されないまま通る (fail-open)。従来の実装 (hooks/_shared/secret-scan.py) は Unicode の数字も int に直し、
+// 値が検査されないまま通る (fail-open)。従来の実装は Unicode の数字も int に直し、
 // 桁数に上限が無いので、u64 を超える count や全角の数字を持つ header は hunk として読めるが、git はどちらも出さない。
 // 同じ読み方を再現するより、読めないと認めて止める方が安全側に倒れる
 fn hunk_header(raw: &str) -> Result<(u64, u64, u64), String> {
