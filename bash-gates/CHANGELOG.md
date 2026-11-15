@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.2.1](https://github.com/nekottyo/agent-tools/compare/bash-gates/v0.2.0...bash-gates/v0.2.1) - 2026-11-15
+
+### Changes
+- docs: ADR の雛形を置き、bash-gates の設計の ADR を書く by @nekottyo in https://github.com/nekottyo/agent-tools/pull/14
+
 ## [v0.2.0](https://github.com/nekottyo/agent-tools/compare/bash-gates/v0.1.2...bash-gates/v0.2.0) - 2026-11-15
 
 ### Changes
