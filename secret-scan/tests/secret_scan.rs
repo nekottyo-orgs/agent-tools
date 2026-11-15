@@ -723,6 +723,11 @@ fn diff_cases() -> Vec<DiffCase> {
         ),
         ("区切り文字より後ろの値も同じ行として走査する", r, "+++ b/f.md\n@@ -0,0 +1 @@\n+x\x0c8.8.8.8\n", vec![("f.md", 1)]),
         ("pragma の行だけ飛ばし、次の行は見る", r,"+++ b/f.md\n@@ -0,0 +1,2 @@\n+8.8.8.8 # secret-scan-gate:allow\n+8.8.4.4\n", vec![("f.md", 2)]),
+        // hunk の外の `+++` で始まる行は、直後が空白でなければ file header でなく追加行 (`+++ ` だけが header)。
+        // slack の投稿を diff に包む形では、本文の 2 行目以降がこの位置に来る
+        ("hunk の外の +++ 直後が空白でない行は追加行", r, "+++ b/f.md\n@@ -0,0 +1 @@\n+x\n+++8.8.8.8\n", vec![("f.md", 2)]),
+        ("hunk の外の +++ 始まりの行 (slack の包み方)", r, "+++ b/slack\n@@ -0,0 +1 @@\n+hello\n+++k 8.8.8.8\n", vec![("slack", 2)]),
+        ("+++ だけの行も追加行として数える", r, "+++ b/f.md\n+++\n+8.8.8.8\n", vec![("f.md", 1)]),
         (
             "exempt は差分内のファイルごとに効く",
             "example/docs",
@@ -739,6 +744,9 @@ fn diff_cases_rust_only() -> Vec<DiffCase> {
         // git は非 ASCII の path を `"b/docs/\346..."` の形で出す。戻した path で除外を照合し、報告にも戻した名前を使う
         ("quote された path も戻して除外を効かせる", "example/docs", "+++ \"b/docs/\\346\\227\\245.md\"\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![]),
         ("quote された path は戻した名前で報告する", r, "+++ \"b/\\346\\227\\245.md\"\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![("日.md", 1)]),
+        // /dev/null の判定は、quote や tab を戻す前の文字列で行う。git は /dev/null をそのまま出すので、これらは別名の file
+        ("quote した /dev/null は別名の file として走査する", r, "+++ \"/dev/null\"\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![("/dev/null", 1)]),
+        ("tab の後ろに文字がある /dev/null は別名の file として走査する", r, "+++ /dev/null\tx\n@@ -0,0 +1 @@\n+8.8.8.8\n", vec![("/dev/null", 1)]),
     ]
 }
 
@@ -758,22 +766,69 @@ fn diff_reading_reports_file_and_line() {
     }
 }
 
-// 不正な UTF-8 は lossy に変換して走査を続ける。従来の実装は例外終了するので、契約として決めた Rust 側だけを見る
+// 不正な UTF-8 は置き換えて走査せず、exit 2 で止める。U+FFFD に畳むと値の長さと文字の散らばりが変わり、
+// エントロピーなどの閾値を割って検出が外れる。stdout には何も出さず、呼び出し側が fail-close で deny する
 #[test]
-fn invalid_utf8_is_scanned_lossily() {
+fn invalid_utf8_exits_2() {
     if reference_mode() {
         return;
     }
     let t = Tmp::new();
     let policy = t.file("policy.json", &policy_json().to_string());
-    let out = scan(&policy, "example/repo", b"+++ b/f.md\n@@ -0,0 +1,2 @@\n+\xff\xfe junk\n+8.8.8.8\n".as_slice());
-    assert_eq!(out.code, Some(0), "stderr={}", out.stderr);
-    let got: Vec<(String, u64)> = findings(&out)
-        .expect("JSON")
+    // 接続文字列の password の位置に不正な byte を置く形 (置き換えると password の長さと散らばりが閾値を割る)
+    let mut db: Vec<u8> = b"+++ b/src/a.rs\n@@ -0,0 +1 @@\n+url = postgres://appuser:".to_vec();
+    db.extend_from_slice(&[0xa5, 0xb1, 0xa6, 0xb2, 0xa7, 0xb3, 0xa8, 0xb4]);
+    db.extend_from_slice(b"@db.example.test/app\n");
+    // 途中で切れた多 byte 列
+    let mut cut: Vec<u8> = b"+++ b/src/a.rs\n@@ -0,0 +1 @@\n+url = postgres://appuser:".to_vec();
+    cut.extend_from_slice(&[0xe3, 0x81, 0xe4, 0x81, 0xe5, 0x81, 0xe6, 0x81]);
+    cut.extend_from_slice(b"@db.example.test/app\n");
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        ("password の位置の不正な byte", db),
+        ("途中で切れた多 byte 列", cut),
+        ("追加行の中の不正な byte", b"+++ b/f.md\n@@ -0,0 +1,2 @@\n+\xff\xfe junk\n+8.8.8.8\n".to_vec()),
+        ("file header の path の不正な byte", b"+++ b/f\xff.md\n@@ -0,0 +1 @@\n+8.8.8.8\n".to_vec()),
+    ];
+    let ng: Vec<String> = cases
         .iter()
-        .map(|x| (x["file"].as_str().unwrap_or("?").to_string(), x["line"].as_u64().unwrap_or(u64::MAX)))
+        .filter_map(|(desc, input)| {
+            let out = scan(&policy, "example/repo", input.as_slice());
+            (out.code != Some(2) || !out.stdout.is_empty()).then(|| format!("  NG {desc}: exit {:?} stdout={:?}", out.code, out.stdout))
+        })
         .collect();
-    assert_eq!(got, vec![("f.md".to_string(), 2)]);
+    assert!(ng.is_empty(), "{} 件失敗\n{}", ng.len(), ng.join("\n"));
+    // 有効な UTF-8 の同じ形は走査できる
+    let ok = scan(&policy, "example/repo", "+++ b/f.md\n@@ -0,0 +1 @@\n+8.8.8.8\n");
+    assert_eq!(ok.code, Some(0), "stderr={}", ok.stderr);
+}
+
+// hunk header が読めないときは、0 行の hunk として流さず exit 2 で止める。流すと、続く `+++ ` 始まりの追加行を
+// file header と読み、値が検査されない。壊れた形・全角の数字・u64 を超える count の 3 種
+#[test]
+fn unreadable_hunk_header_exits_2() {
+    if reference_mode() {
+        return;
+    }
+    let t = Tmp::new();
+    let policy = t.file("policy.json", &policy_json().to_string());
+    let huge = "9".repeat(30);
+    let wide = "\u{ff10},\u{ff10} +\u{ff11},\u{ff12}";
+    let cases: Vec<(&str, String)> = vec![
+        ("count が u64 を超える", format!("+++ b/src/a.rs\n@@ -0,0 +1,{huge} @@\n+x\n+++ k 8.8.8.8\n")),
+        ("count が u64 を超え、続く追加行が別の file になる", format!("+++ b/src/a.rs\n@@ -0,0 +1,{huge} @@\n+x\n+++ b/docs/z\n+8.8.8.8\n")),
+        ("全角の数字", format!("+++ b/src/a.rs\n@@ -{wide} @@\n+x\n+++ k 8.8.8.8\n")),
+        ("new の count が壊れている", "+++ b/docs/a.md\n@@ -1,5 +1,1x @@\n+x\n+++ b/src/b.rs\n@@ -0,0 +1 @@\n+8.8.8.8\n".to_string()),
+        ("削除の後ろの壊れた header", "+++ /dev/null\n@@ -1,5 +0,0x @@\n-x\n+++ b/src/b.rs\n@@ -0,0 +1 @@\n+8.8.8.8\n".to_string()),
+        ("閉じの @@ が無い", "+++ b/f.md\n@@ -0,0 +1\n+8.8.8.8\n".to_string()),
+    ];
+    let ng: Vec<String> = cases
+        .iter()
+        .filter_map(|(desc, input)| {
+            let out = scan(&policy, "example/repo", input.as_str());
+            (out.code != Some(2) || !out.stdout.is_empty()).then(|| format!("  NG {desc}: exit {:?} stdout={:?}", out.code, out.stdout))
+        })
+        .collect();
+    assert!(ng.is_empty(), "{} 件失敗\n{}", ng.len(), ng.join("\n"));
 }
 
 // ---------------------------------------------------------------------------

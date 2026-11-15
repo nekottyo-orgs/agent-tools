@@ -16,12 +16,12 @@
 //     hunk の行数の勘定が狂い、後ろの断片が header や読み捨ての行になる (fail-open)
 //   - 正規表現の先読み・後読みが探索上限で Err になったときは、見落とさないよう検出側に倒す
 //     (値は `…`)。fancy-regex は Python の re と違い、上限超過を結果でなく Err で返す
-//   - policy の形が想定と違うときは黙って通さず exit 2 にする。素通りは fail-open になる
+//   - policy の形が想定と違うとき、stdin が UTF-8 でないとき、hunk header が読めないときは、黙って通さず exit 2 にする。素通りは fail-open になる
 //   - 値は credential 系 class では先頭 6 文字だけ残して報告する (transcript とログに秘密の全体を残さない)
 //
 // 使い方: git diff --cached --unified=0 | secret-scan --policy <path> --repo owner/name
 //
-// 終了コード: 0 = 走査完了 (検出の有無は stdout の JSON)。2 = 引数不正・policy 読み込み失敗・stdin の読み取り失敗 (呼び出し側は fail-close で扱う)
+// 終了コード: 0 = 走査完了 (検出の有無は stdout の JSON)。2 = 引数不正・policy 読み込み失敗・stdin の読み取り失敗・stdin が UTF-8 でない・hunk header が読めない (呼び出し側は fail-close で扱う)
 
 use crate::secret_rules;
 use serde_json::{json, Map, Value};
@@ -282,42 +282,43 @@ fn diff_lines(s: &str) -> Vec<&str> {
     lines
 }
 
-// `@@ -a,b +c,d @@` の `+` の直後の数字列。Python の `\d` は Unicode の数字も取るが、
-// git が出す hunk header は ASCII だけなので ASCII に限る
-fn new_start(header: &str) -> u64 {
-    header
-        .match_indices('+')
-        .find_map(|(i, _)| {
-            let digits: String = header[i + 1..].chars().take_while(char::is_ascii_digit).collect();
-            (!digits.is_empty()).then(|| digits.parse().unwrap_or(u64::MAX))
-        })
-        .unwrap_or(0)
+// `N` か `N,M` を読み、(N, M, 残り) を返す。`,M` が無い側は 1 行。数字は ASCII だけで、u64 に収まるものに限る
+fn take_range(s: &str) -> Option<(u64, u64, &str)> {
+    let digits = |s: &str| -> Option<(u64, usize)> {
+        let n = s.bytes().take_while(u8::is_ascii_digit).count();
+        Some((s[..n].parse().ok()?, n))
+    };
+    let (start, n) = digits(s)?;
+    let rest = &s[n..];
+    match rest.strip_prefix(',') {
+        Some(r) => {
+            let (count, n) = digits(r)?;
+            Some((start, count, &r[n..]))
+        }
+        None => Some((start, 1, rest)),
+    }
 }
 
-// `@@ -a,b +c,d @@` の (b, d)。`,` が無い側は 1 行。読めなければ (0, 0) で、hunk の外として扱う
-fn hunk_counts(header: &str) -> (u64, u64) {
-    let (mut old, mut new) = (None, None);
-    for tok in header.split_ascii_whitespace().skip(1).take_while(|t| *t != "@@") {
-        let (slot, rest) = match (tok.strip_prefix('-'), tok.strip_prefix('+')) {
-            (Some(r), _) => (&mut old, r),
-            (_, Some(r)) => (&mut new, r),
-            _ => continue,
-        };
-        if slot.is_none() {
-            *slot = match rest.split_once(',') {
-                Some((_, n)) => n.parse::<u64>().ok(),
-                None => rest.parse::<u64>().ok().map(|_| 1),
-            };
-        }
+// `@@ -a,b +c,d @@` の (c, b, d)。hunk の外で読めない header は Err にして、呼び出し側で走査の失敗にする。
+// 読めないものを 0 行の hunk として流すと、続く `+++ ` 始まりの追加行を file header と取り違え、
+// 値が検査されないまま通る (fail-open)。従来の実装 (hooks/_shared/secret-scan.py) は Unicode の数字も int に直し、
+// 桁数に上限が無いので、u64 を超える count や全角の数字を持つ header は hunk として読めるが、git はどちらも出さない。
+// 同じ読み方を再現するより、読めないと認めて止める方が安全側に倒れる
+fn hunk_header(raw: &str) -> Result<(u64, u64, u64), String> {
+    let bad = || format!("unreadable hunk header: {}", raw.chars().take(60).collect::<String>());
+    let (_, old, rest) = raw.strip_prefix("@@ -").and_then(take_range).ok_or_else(bad)?;
+    let (start, new, rest) = rest.strip_prefix(" +").and_then(take_range).ok_or_else(bad)?;
+    if !rest.starts_with(" @@") {
+        return Err(bad());
     }
-    (old.unwrap_or(0), new.unwrap_or(0))
+    Ok((start, old, new))
 }
 
 /// unified diff から (パス, 行番号, 行内容) を追加行だけ取り出す。
 ///
 /// hunk の残り行数を数え、hunk の中の `+` 始まりの行は内容に関わらず追加行として読む。
 /// 内容が `++ ` で始まる行を file header と取り違えて、以降の走査や除外の判定を外させないため
-fn added_lines(diff: &str) -> Vec<(String, u64, &str)> {
+fn added_lines(diff: &str) -> Result<Vec<(String, u64, &str)>, String> {
     let mut out = Vec::new();
     let mut path: Option<String> = None;
     let mut lineno: u64 = 0;
@@ -341,21 +342,23 @@ fn added_lines(diff: &str) -> Vec<(String, u64, &str)> {
             // (除外の照合で、末尾に空白のある別 file が除外 path と同じ扱いにならないように)
             let target = unquote_git_path(rest.split('\t').next().unwrap_or(rest));
             let target = target.as_str();
-            // `+++ b/path` の b/ を剥がす。/dev/null は削除なので追跡しない
-            path = (target.trim_end() != "/dev/null").then(|| {
+            // `+++ b/path` の b/ を剥がす。/dev/null は削除なので追跡しない。
+            // 追跡しない条件は、quote や tab を戻す前の文字列で決める。git は /dev/null をそのまま出すので、
+            // `"/dev/null"` や `/dev/null<tab>x` は別の名前の file として走査する (従来の実装も同じ)
+            path = (rest.trim() != "/dev/null").then(|| {
                 target.strip_prefix("a/").or_else(|| target.strip_prefix("b/")).unwrap_or(target).to_string()
             });
         } else if raw.starts_with("@@") {
-            lineno = new_start(raw);
-            (rem_old, rem_new) = hunk_counts(raw);
-        } else if raw.starts_with('+') && !raw.starts_with("+++") {
+            (lineno, rem_old, rem_new) = hunk_header(raw)?;
+        } else if raw.starts_with('+') {
+            // `+++` で始まり直後が空白でない行 (`+++x`) もここに来る。file header は `+++ ` だけ
             if let Some(p) = &path {
                 out.push((p.clone(), lineno, &raw[1..]));
             }
             lineno = lineno.saturating_add(1);
         }
     }
-    out
+    Ok(out)
 }
 
 fn parse_args(args: &[String]) -> Result<(String, String), String> {
@@ -446,11 +449,25 @@ pub fn run(args: Vec<String>) -> i32 {
         eprintln!("failed to read stdin: {e}");
         return 2;
     }
-    // 不正な UTF-8 を含む diff (バイナリ混じり、他 encoding) でも落とさず走査する
-    let diff = String::from_utf8_lossy(&input);
+    // 不正な byte を U+FFFD に置き換えて走査すると、値の長さと文字の散らばりが変わり、エントロピーなどの閾値を割って
+    // 検出が外れる (fail-open)。置き換えず、走査できなかったものとして呼び出し側に deny させる
+    let diff = match std::str::from_utf8(&input) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("stdin is not valid UTF-8 (byte {})", e.valid_up_to());
+            return 2;
+        }
+    };
+    let added = match added_lines(diff) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
 
     let mut findings = Vec::new();
-    for (path, lineno, content) in added_lines(&diff) {
+    for (path, lineno, content) in added {
         if content.contains(PRAGMA) {
             continue;
         }
@@ -503,6 +520,10 @@ pub fn run(args: Vec<String>) -> i32 {
 mod tests {
     use super::*;
 
+    fn lines(d: &str) -> Vec<(String, u64, &str)> {
+        added_lines(d).expect("読める diff")
+    }
+
     #[test]
     fn diff_lines_は_改行だけで分ける() {
         assert_eq!(diff_lines("a\nb\r\nc"), ["a", "b", "c"]);
@@ -519,9 +540,9 @@ mod tests {
     #[test]
     fn path_の空白は残し_tab_の区切りだけ取る() {
         let d = "+++ b/docs/a b \t\n@@ -0,0 +1 @@\n+x\n";
-        assert_eq!(added_lines(d), vec![("docs/a b ".to_string(), 1, "x")]);
+        assert_eq!(lines(d), vec![("docs/a b ".to_string(), 1, "x")]);
         let d = "+++ b/docs/a\n@@ -0,0 +1 @@\n+x\n";
-        assert_eq!(added_lines(d), vec![("docs/a".to_string(), 1, "x")]);
+        assert_eq!(lines(d), vec![("docs/a".to_string(), 1, "x")]);
     }
 
     #[test]
@@ -571,7 +592,7 @@ mod tests {
     #[test]
     fn added_lines_は_path_と行番号を追う() {
         let diff = "diff --git a/f b/f\n--- a/f\n+++ b/dir/f.txt\n@@ -1,0 +5,2 @@\n+one\n+two\n@@ -9 +20 @@\n-nine\n+three\n+++ /dev/null\n@@ -1 +1 @@\n-a\n+gone\n";
-        let got = added_lines(diff);
+        let got = lines(diff);
         assert_eq!(
             got,
             vec![
@@ -584,25 +605,60 @@ mod tests {
 
     #[test]
     fn added_lines_は_hunk_が無ければ行番号_0_から数える() {
-        let got = added_lines("+++ b/f\n+x\n+y\n");
+        let got = lines("+++ b/f\n+x\n+y\n");
         assert_eq!(got, vec![("f".to_string(), 0, "x"), ("f".to_string(), 1, "y")]);
     }
 
     #[test]
     fn added_lines_は_python_版の癖を再現する() {
         // 内容が `++ ` で始まる追加行は `+++ ` ヘッダとして扱われ、path が切り替わる
-        let got = added_lines("+++ b/f\n+a\n+++ b\n+c\n");
+        let got = lines("+++ b/f\n+a\n+++ b\n+c\n");
         assert_eq!(got, vec![("f".to_string(), 0, "a"), ("b".to_string(), 1, "c")]);
-        // `+++` だけの行は追加行にならず行番号も進まない
-        let got = added_lines("+++ b/f\n+++\n+a\n");
-        assert_eq!(got, vec![("f".to_string(), 0, "a")]);
+        // `+++` だけの行と、`+++` の直後が空白でない行 (`+++x`) は file header でなく追加行。従来の実装も同じ
+        let got = lines("+++ b/f\n+++\n+a\n+++x\n");
+        assert_eq!(
+            got,
+            vec![("f".to_string(), 0, "++"), ("f".to_string(), 1, "a"), ("f".to_string(), 2, "++x")]
+        );
+    }
+
+    #[test]
+    fn added_lines_は_読めない_hunk_header_を_err_にする() {
+        // 壊れた形、全角の数字、u64 を超える count。続く `+++ ` 始まりの追加行を file header と読ませない
+        for h in [
+            "@@ -1,5 +1x @@",
+            "@@ -1,5 +1,x @@",
+            "@@ -1,5 +1 @",
+            "@@ -1,5 @@",
+            "@@ -\u{ff10},\u{ff10} +\u{ff11},\u{ff12} @@",
+            "@@ -0,0 +1,999999999999999999999999999999 @@",
+            "@@ -0,0 +99999999999999999999 @@",
+            "@@@ -1,2 -1,2 +1,3 @@@",
+            "@@",
+        ] {
+            let d = format!("+++ b/f\n{h}\n+x\n+++ k\n");
+            assert!(added_lines(&d).is_err(), "{h}");
+        }
+        // git が出す形は読める (関数名の後置、count の省略)
+        let got = lines("+++ b/f\n@@ -3 +4 @@ fn main() {\n+x\n");
+        assert_eq!(got, vec![("f".to_string(), 4, "x")]);
+    }
+
+    #[test]
+    fn added_lines_は_dev_null_を_quote_や_tab_を戻す前の文字列で決める() {
+        // 従来の実装と同じ。git はどちらの形も出さないが、別名の file として走査する
+        let got = lines("+++ \"/dev/null\"\n@@ -0,0 +1 @@\n+x\n");
+        assert_eq!(got, vec![("/dev/null".to_string(), 1, "x")]);
+        let got = lines("+++ /dev/null\tx\n@@ -0,0 +1 @@\n+x\n");
+        assert_eq!(got, vec![("/dev/null".to_string(), 1, "x")]);
+        assert!(lines("+++ /dev/null \n@@ -0,0 +1 @@\n+x\n").is_empty());
     }
 
     #[test]
     fn added_lines_は_path_が_none_でも行番号を進める() {
-        let got = added_lines("+++ /dev/null\n+x\n+++ b/f\n+y\n");
+        let got = lines("+++ /dev/null\n+x\n+++ b/f\n+y\n");
         assert_eq!(got, vec![("f".to_string(), 1, "y")]);
-        let got = added_lines("+++ /dev/null\n@@ -0,0 +1 @@\n+x\n+++ b/f\n+y\n");
+        let got = lines("+++ /dev/null\n@@ -0,0 +1 @@\n+x\n+++ b/f\n+y\n");
         assert_eq!(got, vec![("f".to_string(), 2, "y")]);
     }
 
