@@ -464,6 +464,15 @@ fn brief_char(c: char) -> bool {
 pub fn brief_path(s: &str) -> Option<String> {
     s.split_whitespace().find_map(|tok| {
         tok.match_indices('/').find_map(|(start, _)| {
+            // 語頭の / だけ。foo/brief-x.md の途中や URL の中は拾わない。
+            // 日本語の句点や引用符の直後は語頭とみなすので、ASCII の語・パス・URL の文字の直後だけを外す
+            if tok[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || "/:._-~%".contains(c))
+            {
+                return None;
+            }
             let rest = &tok[start..];
             rest.match_indices("/brief-")
                 .collect::<Vec<_>>()
@@ -633,6 +642,11 @@ mod tests {
             brief_path("これを読んで `/tmp/run/brief-a.b_c.md` 頼む").as_deref(),
             Some("/tmp/run/brief-a.b_c.md"),
             "brief の絶対パスを拾うはず"
+        );
+        assert_eq!(
+            brief_path("foo/tmp/brief-x.md https://example.test/run/brief-y.md"),
+            None,
+            "語の途中や URL の中は拾わないはず"
         );
         assert_eq!(
             brief_path("/brief-x.md"),

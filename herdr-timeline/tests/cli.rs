@@ -300,6 +300,8 @@ fn req6_bad_arguments_exit_2() {
         &["--timeline", "--once"],
         &["--width", "0"],
         &["--interval", "abc"],
+        &["--interval", "86401"],
+        &["--interval", "18446744073709551615"],
         &["--bogus"],
         &["--runs-dir"],
     ] {

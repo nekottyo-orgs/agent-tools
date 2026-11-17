@@ -27,7 +27,7 @@ herdr-timeline [--once] [--interval N] [--width N] [--timeline PANE_ID] [--runs-
 | オプション | 意味 |
 | --- | --- |
 | `--once` | 1 回描画して終わる |
-| `--interval N` | 更新の間隔 (秒、既定 5) |
+| `--interval N` | 更新の間隔 (秒、既定 5、上限 86400) |
 | `--width N` | 表示幅を固定する (既定は端末幅 - 1、最小 30) |
 | `--timeline PANE_ID` | pane の Timeline を 1 回出して終わる (非対話) |
 | `--runs-dir DIR` | run のディレクトリ (`DIR/<run>/run.md`、`DIR/<run>/inbox/{new,cur}/*.msg`)。無ければ報告・進捗・未処理の報告を出さないだけで動く |
@@ -50,7 +50,7 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 | --- | --- |
 | 0 | 正常 (`-h`、`--once`・`--timeline` の描画、対話の終了) |
 | 1 | `--timeline` の pane が見つからない |
-| 2 | 引数の誤り (値の欠落、値が `-` で始まる、正の整数でない、不明な引数) |
+| 2 | 引数の誤り (値の欠落、値が `-` で始まる、正の整数でない、`--interval` が 86400 を超える、不明な引数) |
 
 ### キー操作
 

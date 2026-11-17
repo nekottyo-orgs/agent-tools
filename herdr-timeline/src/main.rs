@@ -18,8 +18,8 @@ mod text;
 mod view;
 
 use data::{
-    detail, gather, project_dirs, read_msgs, run_herdr, summary, transcript_mtime, Briefs, Detail,
-    Env, Snapshot, Transcripts,
+    canon, detail, gather, project_dirs, read_msgs, run_herdr, summary, transcript_mtime, Briefs,
+    Detail, Env, PaneRow, Snapshot, Transcripts,
 };
 use std::collections::HashMap;
 use std::io::Write;
@@ -37,7 +37,7 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
 
 オプション:
   --once             1 回描画して終わる
-  --interval N       更新の間隔 (秒、既定 5)
+  --interval N       更新の間隔 (秒、既定 5、上限 86400)
   --width N          表示幅を固定する (既定は端末幅 - 1、最小 30)
   --timeline PANE_ID pane の Timeline を 1 回出して終わる (非対話)
   --runs-dir DIR     run のディレクトリ (DIR/<run>/run.md と DIR/<run>/inbox/{new,cur}/*.msg)。
@@ -66,8 +66,10 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
 終了コード:
   0  正常 (-h、--once・--timeline の描画、対話の終了)
   1  --timeline の pane が見つからない
-  2  引数の誤り
+  2  引数の誤り (--interval が 86400 を超える場合を含む)
 ";
+
+const INTERVAL_MAX: u64 = 86400;
 
 struct Opts {
     once: bool,
@@ -97,10 +99,15 @@ fn parse_args(args: &[String]) -> Result<Option<Opts>, String> {
             Ok(n) if n > 0 => Ok(n),
             _ => Err(format!("{a} は正の整数で指定する ({v})")),
         };
+        // Instant への加算が overflow しない範囲に収める
+        let interval = |v: String| match positive(v)? {
+            n if n > INTERVAL_MAX => Err(format!("{a} は {INTERVAL_MAX} 以下で指定する ({n})")),
+            n => Ok(n),
+        };
         match a.as_str() {
             "-h" | "--help" => return Ok(None),
             "--once" => o.once = true,
-            "--interval" => o.interval = positive(value()?)?,
+            "--interval" => o.interval = interval(value()?)?,
             "--width" => o.width = Some(positive(value()?)? as usize),
             "--timeline" => o.timeline = Some(value()?),
             "--runs-dir" => o.runs = Some(PathBuf::from(value()?)),
@@ -201,9 +208,20 @@ impl Seen {
     }
 }
 
+/// 修飾なしの id は今の socket の session を優先し、無ければ他の session から探す
+fn pick_pane<'a>(panes: &'a [PaneRow], pane: &str, own_sock: &str) -> Option<&'a PaneRow> {
+    let own = canon(own_sock);
+    let hit = |p: &&PaneRow| p.pane == pane || p.key == pane;
+    panes
+        .iter()
+        .filter(hit)
+        .find(|p| p.socket == own)
+        .or_else(|| panes.iter().find(hit))
+}
+
 fn print_timeline(env: &Env, pane: &str, width: usize, color: bool) -> i32 {
     let snap = gather(env);
-    let Some(row) = snap.panes.iter().find(|p| p.pane == pane || p.key == pane) else {
+    let Some(row) = pick_pane(&snap.panes, pane, &env.own_sock.to_string_lossy()) else {
         let why = if snap.warn.is_empty() {
             String::new()
         } else {
@@ -431,8 +449,11 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
                 match k {
                     "q" => return,
                     "enter" => {
-                        if let Some(tab) =
-                            sel.as_ref().and_then(|s| prev.iter().find(|x| &x.0 == s))
+                        // tab_id が空の行 (別 session) は移動先が無いので何もしない
+                        if let Some(tab) = sel
+                            .as_ref()
+                            .and_then(|s| prev.iter().find(|x| &x.0 == s))
+                            .filter(|x| !x.1.is_empty())
                         {
                             notice = focus_tab(env, &tab.1);
                         }
@@ -513,6 +534,49 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pane_row(key: &str, pane: &str, socket: &str) -> PaneRow {
+        PaneRow {
+            key: key.into(),
+            pane: pane.into(),
+            tag: String::new(),
+            status: "working".into(),
+            name: String::new(),
+            title: String::new(),
+            sid: None,
+            tab_id: None,
+            ws: (String::new(), String::new()),
+            socket: socket.into(),
+        }
+    }
+
+    #[test]
+    fn req6_interval_over_limit_is_rejected() {
+        let a = |v: &str| parse_args(&["--interval".into(), v.into()]);
+        assert!(a("86400").is_ok(), "上限ちょうどは通るはず");
+        assert!(a("86401").is_err(), "上限超過は誤りのはず");
+        assert!(
+            a("18446744073709551615").is_err(),
+            "u64 の最大でも panic せず誤りのはず"
+        );
+    }
+
+    #[test]
+    fn unqualified_pane_prefers_own_socket() {
+        let panes = [
+            pane_row("alpha/wA:p1", "wA:p1", "/nonexistent/alpha.sock"),
+            pane_row("beta/wA:p1", "wA:p1", "/nonexistent/beta.sock"),
+        ];
+        let p = pick_pane(&panes, "wA:p1", "/nonexistent/beta.sock").expect("見つかるはず");
+        assert_eq!(p.key, "beta/wA:p1", "今の socket の session を選ぶはず");
+        let p = pick_pane(&panes, "wA:p1", "/nonexistent/other.sock").expect("見つかるはず");
+        assert_eq!(p.key, "alpha/wA:p1", "今の socket に無ければ先頭を選ぶはず");
+        let p = pick_pane(&panes, "alpha/wA:p1", "/nonexistent/beta.sock").expect("見つかるはず");
+        assert_eq!(
+            p.key, "alpha/wA:p1",
+            "完全な key なら別 session も選べるはず"
+        );
+    }
 
     #[test]
     fn key_parser_keeps_state_across_reads() {

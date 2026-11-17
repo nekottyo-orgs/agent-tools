@@ -25,7 +25,7 @@ pub struct Row {
     pub ws: (String, String),
 }
 
-/// (key, tab_id) の並び。表示順で、選択の対象になる行だけ
+/// (key, tab_id) の並び。表示順で、選択の対象になる行。tab_id が空なのは tab に移れない (別 session の) 行
 pub type Order = Vec<(String, String)>;
 
 pub struct View<'a> {
@@ -207,7 +207,7 @@ pub fn layout(v: &View) -> (Vec<String>, Vec<(String, String)>, Option<String>) 
         .collect();
     let order: Vec<(String, String)> = ordered
         .iter()
-        .filter_map(|x| Some((x.key.clone(), x.tab_id.clone()?)))
+        .map(|x| (x.key.clone(), x.tab_id.clone().unwrap_or_default()))
         .collect();
     let chosen = v
         .select
@@ -289,12 +289,12 @@ pub fn layout(v: &View) -> (Vec<String>, Vec<(String, String)>, Option<String>) 
             if whole {
                 let mut body = format!("{lead}{nm} {ag}{mid}");
                 if first {
-                    body += &format!(" {}", x.tag);
+                    body += &format!(" {}", clip(&x.tag, pw as usize));
                 }
                 lines.push(blank.clone() + &paint(body.trim_end(), ALERT_STYLE));
             } else {
                 let tag = if first {
-                    paint(&format!(" {}", x.tag), "2")
+                    paint(&format!(" {}", clip(&x.tag, pw as usize)), "2")
                 } else {
                     String::new()
                 };
@@ -428,6 +428,83 @@ mod tests {
             kind,
             body: format!("本文{ts}"),
         }
+    }
+
+    fn row(key: &str, status: &str, tag: &str, tab: Option<&str>) -> Row {
+        Row {
+            key: key.into(),
+            tag: tag.into(),
+            status: status.into(),
+            name: "sample".into(),
+            work: "作業".into(),
+            since: Some(0),
+            approx: false,
+            tab_id: tab.map(Into::into),
+            ws: (String::new(), String::new()),
+        }
+    }
+
+    #[test]
+    fn foreign_session_rows_are_selectable_but_have_no_tab() {
+        let rows = [
+            row("a", "working", "p1", Some("t1")),
+            row("b/p2", "working", "b/p2", None),
+        ];
+        let (names, ws) = (HashMap::new(), HashMap::new());
+        let prev = Vec::new();
+        let v = View {
+            rows: &rows,
+            runs: &[],
+            warn: &[],
+            names: &names,
+            ws_names: &ws,
+            width: 80,
+            color: false,
+            select: Some((None, &prev)),
+            height: None,
+            now: 10,
+            expanded: None,
+            off: &|_| 0,
+        };
+        let (_, order, _) = layout(&v);
+        assert_eq!(
+            order,
+            vec![("a".into(), "t1".into()), ("b/p2".into(), String::new())],
+            "別 session の行も選択でき、tab_id は空のはず"
+        );
+    }
+
+    #[test]
+    fn long_pane_tag_is_clipped_to_reserved_width() {
+        let tag = "very-long-session-name-for-test/wA:p1";
+        let rows = [
+            row("a", "working", tag, None),
+            row("b", "blocked", tag, None),
+        ];
+        let (names, ws) = (HashMap::new(), HashMap::new());
+        let v = View {
+            rows: &rows,
+            runs: &[],
+            warn: &[],
+            names: &names,
+            ws_names: &ws,
+            width: 60,
+            color: false,
+            select: None,
+            height: None,
+            now: 10,
+            expanded: None,
+            off: &|_| 0,
+        };
+        let (lines, _, _) = layout(&v);
+        assert!(
+            lines.iter().all(|l| width_of(l) <= 60),
+            "どの行も表示幅を超えないはず: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains(tag)),
+            "tag は切り詰められるはず: {lines:?}"
+        );
     }
 
     #[test]
