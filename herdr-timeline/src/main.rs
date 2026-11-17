@@ -450,13 +450,13 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
                 match k {
                     "q" => return,
                     "enter" => {
-                        // tab_id が空の行 (別 session) は移動先が無いので何もしない
-                        if let Some(tab) = sel
-                            .as_ref()
-                            .and_then(|s| prev.iter().find(|x| &x.0 == s))
-                            .filter(|x| !x.1.is_empty())
-                        {
-                            notice = focus_tab(env, &tab.1);
+                        // tab_id が空の行 (別 session) は今の session から移れないので、移らずに理由を出す
+                        match sel.as_ref().and_then(|s| prev.iter().find(|x| &x.0 == s)) {
+                            Some(x) if x.1.is_empty() => {
+                                notice = "別 session の行の tab には移れない".to_string()
+                            }
+                            Some(x) => notice = focus_tab(env, &x.1),
+                            None => {}
                         }
                     }
                     "t" if sel.is_some() => {

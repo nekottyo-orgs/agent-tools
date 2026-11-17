@@ -57,7 +57,7 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 | キー | 動作 |
 | --- | --- |
 | `↑` `↓` / `j` `k` | 要対応と作業中の行を選ぶ |
-| `Enter` | 選んだ行の tab へ移動する (`herdr tab focus`)。別 session の行では何もしない |
+| `Enter` | 選んだ行の tab へ移動する (`herdr tab focus`)。別 session の行では移らずに、移れない旨を出す |
 | `t` | 選んだ行の Timeline を開閉する |
 | `q` | 終了する (Ctrl-C でも端末を戻して終わる) |
 
