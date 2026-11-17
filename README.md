@@ -12,6 +12,7 @@
 | tool | 概要 |
 | --- | --- |
 | [bash-gates](bash-gates/) | Bash の PreToolUse hook を束ねる Rust 製の dispatcher。command にきっかけ語がある gate だけを並列に起動し、結果を 1 つにまとめて返す ([設計](bash-gates/docs/adr/0001-dispatcher.md)) |
+| [herdr-timeline](herdr-timeline/) | herdr の pane を要対応 / 作業中 / done・idle の 3 段で一覧し、pane ごとの Timeline (指示・メッセージ・PR・inbox の報告) と brief の step の進捗を出す Rust 製の端末 UI。読むだけで書き込まない |
 | [secret-scan](secret-scan/) | `git diff` の追加行から、secret と実環境の識別子を検出して JSON で返す Rust 製の単体 binary ([設計](secret-scan/docs/adr/0001-secret-scan-subcommand.md)、[別 binary に分けた理由](secret-scan/docs/adr/0002-separate-binary.md)) |
 
 設計判断の記録 (ADR) は、tool に閉じたものを `<tool>/docs/adr/`、repo 全体のものを `docs/adr/` に置く。書式は [docs/adr/template.md](docs/adr/template.md)。
