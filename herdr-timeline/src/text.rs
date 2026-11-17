@@ -482,36 +482,39 @@ fn brief_char(c: char) -> bool {
 
 /// 指示の本文にある /<...>/brief-<name>.md の絶対パス (試作の `(/\S+/brief-[\w.-]+\.md)`)
 pub fn brief_path(s: &str) -> Option<String> {
-    s.split_whitespace().find_map(|tok| {
-        tok.match_indices('/').find_map(|(start, _)| {
-            // 語頭の / だけ。foo/brief-x.md の途中や URL の中は拾わない。
-            // 日本語の句点や引用符の直後は語頭とみなすので、ASCII の語・パス・URL の文字の直後だけを外す
-            if tok[..start]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_ascii_alphanumeric() || "/:._-~%".contains(c))
-            {
-                return None;
-            }
-            let rest = &tok[start..];
-            rest.match_indices("/brief-")
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .find_map(|(k, _)| {
-                    if k < 2 {
-                        return None;
-                    }
-                    let name = &rest[k + "/brief-".len()..];
-                    let run = name.find(|c| !brief_char(c)).unwrap_or(name.len());
-                    let end = name[..run]
-                        .rmatch_indices(".md")
-                        .map(|(i, _)| i)
-                        .find(|&i| i > 0)?;
-                    Some(rest[..k + "/brief-".len() + end + 3].to_string())
-                })
+    // URL は途中に日本語があると後ろの / が語頭に見えるので、トークンごと外す
+    s.split_whitespace()
+        .filter(|tok| !tok.contains("://"))
+        .find_map(|tok| {
+            tok.match_indices('/').find_map(|(start, _)| {
+                // 語頭の / だけ。foo/brief-x.md の途中や URL の中は拾わない。
+                // 日本語の句点や引用符の直後は語頭とみなすので、ASCII の語・パス・URL の文字の直後だけを外す
+                if tok[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || "/:._-~%".contains(c))
+                {
+                    return None;
+                }
+                let rest = &tok[start..];
+                rest.match_indices("/brief-")
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .find_map(|(k, _)| {
+                        if k < 2 {
+                            return None;
+                        }
+                        let name = &rest[k + "/brief-".len()..];
+                        let run = name.find(|c| !brief_char(c)).unwrap_or(name.len());
+                        let end = name[..run]
+                            .rmatch_indices(".md")
+                            .map(|(i, _)| i)
+                            .find(|&i| i > 0)?;
+                        Some(rest[..k + "/brief-".len() + end + 3].to_string())
+                    })
+            })
         })
-    })
 }
 
 pub const GOAL_MAX: usize = 60;
@@ -674,7 +677,9 @@ mod tests {
             "brief の絶対パスを拾うはず"
         );
         assert_eq!(
-            brief_path("foo/tmp/brief-x.md https://example.test/run/brief-y.md"),
+            brief_path(
+                "foo/tmp/brief-x.md https://example.test/run/brief-y.md https://example.test/資料/tmp/brief-z.md",
+            ),
             None,
             "語の途中や URL の中は拾わないはず"
         );
