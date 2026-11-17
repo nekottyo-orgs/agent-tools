@@ -95,9 +95,4 @@ worker は inbox に `tag: progress` の msg を送り、本文の最初の行�
 
 判定部 (並び順、まとめ、行の分類、帰属、session_id の検証、brief と進捗) は [`lean/HerdrTimeline.lean`](lean/HerdrTimeline.lean) にモデルと性質の証明がある。Rust (`src/core.rs`) は関数の名前と判定をモデルに揃え、一致は `src/core.rs` の `#[cfg(test)]` が同じ入力の例で確かめる。
 
-証明が残っている (`sorry`) 定理:
-
-<!-- Lean の model の担当が埋める。以下は下書き時点の一覧 -->
-- `order_indep`
-- `group_adjacent`
-- `status_indep`
+証明が残っている (`sorry`) 定理は無い (`lake build` が通り、`sorry` は 0 件)。
