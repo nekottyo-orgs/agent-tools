@@ -220,11 +220,12 @@ def userEvent (i : Nat) (l : Line) : Option Event :=
       | .skip => none
   | _, _ => none
 
-/-- PR は URL の初出だけ。seen は既に出した URL -/
+/-- PR は URL の初出だけ。seen は既に出した URL。除外行は種類によらず飛ばし、seen にも入れない -/
 def lineEvents : Nat → List Str → List Line → List Event
   | _, _, [] => []
   | i, seen, l :: ls =>
-    if l.typ = "pr-link".toList then
+    if excluded l then lineEvents (i+1) seen ls
+    else if l.typ = "pr-link".toList then
       match l.ts, l.pr with
       | some ts, some u =>
         if u ∈ seen then lineEvents (i+1) seen ls
@@ -245,12 +246,18 @@ def transcriptEvents (input : Option (List Line)) : List Event :=
 /-- 要件 1: 読めない transcript はイベント 0 件 (例外で止まらない) -/
 theorem unreadable_empty : transcriptEvents none = [] := rfl
 
-/-- 要件 2: 除外条件に当たる user 行はイベントにならない -/
-theorem excluded_no_event (i : Nat) (l : Line) (h : excluded l = true) : userEvent i l = none := by
-  unfold userEvent
-  split
-  · simp [h]
-  · rfl
+/-- 要件 2: 除外条件に当たる行は、user でも pr-link でもイベントにならず、
+    後続の判定 (PR の初出を決める seen) にも影響しない -/
+theorem excluded_no_event (i : Nat) (l : Line) (h : excluded l = true) :
+    userEvent i l = none ∧
+      ∀ seen ls, lineEvents i seen (l :: ls) = lineEvents (i+1) seen ls := by
+  refine ⟨?_, ?_⟩
+  · unfold userEvent
+    split
+    · simp [h]
+    · rfl
+  · intro seen ls
+    simp [lineEvents, h]
 
 theorem dropWhile_ws_append (ws s : Str) (h : ∀ c ∈ ws, isWs c = true) :
     (ws ++ s).dropWhile isWs = s.dropWhile isWs := by
@@ -282,18 +289,27 @@ structure Pane where
   socket : Str
   since : Option Nat  -- session の最初の時刻。pane id の再利用に備える
 
-/-- 帰属は (socket, pane id) が一致し、session の開始以降のときだけ。from_socket の無い旧形式は帰属させない -/
+/-- 帰属は (socket, pane id) が一致し、session の開始以降のときだけ。
+    from_socket の無い旧形式と、開始時刻 (since) が分からない pane には帰属させない -/
 def attributed (p : Pane) (m : Msg) : Bool :=
   m.fromSocket == some p.socket && m.fromPane == p.pane &&
-    (match p.since with | none => true | some s => decide (s ≤ m.ts))
+    (match p.since with | none => false | some s => decide (s ≤ m.ts))
 
 theorem attributed_sound (p : Pane) (m : Msg) (h : attributed p m = true) :
-    m.fromSocket = some p.socket ∧ m.fromPane = p.pane := by
+    m.fromSocket = some p.socket ∧ m.fromPane = p.pane ∧ ∃ t, p.since = some t ∧ t ≤ m.ts := by
   unfold attributed at h
   simp only [Bool.and_eq_true, beq_iff_eq] at h
-  exact ⟨h.1.1, h.1.2⟩
+  obtain ⟨⟨h1, h2⟩, h3⟩ := h
+  refine ⟨h1, h2, ?_⟩
+  cases hs : p.since with
+  | none => rw [hs] at h3; simp at h3
+  | some t => rw [hs] at h3; exact ⟨t, rfl, by simpa using h3⟩
 
 theorem legacy_not_attributed (p : Pane) (m : Msg) (h : m.fromSocket = none) : attributed p m = false := by
+  simp [attributed, h]
+
+/-- 開始時刻が分からない pane (空・壊れ・読めない transcript) には、どの報告も帰属しない -/
+theorem unknown_since_not_attributed (p : Pane) (m : Msg) (h : p.since = none) : attributed p m = false := by
   simp [attributed, h]
 
 /-! ## 解析キャッシュ (要件 5) -/
@@ -310,31 +326,42 @@ def cachedParse (c : Cache) (f : File) : List Event × Cache :=
       let v' := transcriptEvents f.lines; (v', some (f.key, v'))
   | none => let v' := transcriptEvents f.lines; (v', some (f.key, v'))
 
-/-- キャッシュの中身は、同じ key のどのファイルの解析結果とも等しい -/
-def Valid (c : Cache) (det : ∀ f g : File, f.key = g.key → f.lines = g.lines) : Prop :=
-  ∀ k v, c = some (k, v) → ∀ f : File, f.key = k → v = transcriptEvents f.lines
+/-- 内容は key (mtime, size) から決まる固定の関数 content で与える。
+    「同じ key なら中身も同じ」は mtime と size だけを見る実装の前提で、ここではその前提を
+    content という関数の存在として置く (全 File を量化する前提だと、同じ key で lines が違う File が作れて矛盾する) -/
+def Consistent (content : Nat × Nat → Option (List Line)) (f : File) : Prop :=
+  f.lines = content f.key
 
-/-- 同じ mtime と size ならキャッシュの結果は再解析の結果と等しく、キャッシュは正しいまま。
-    「同じ key なら中身も同じ」(det) はモデルの前提 (mtime と size を見るだけの実装の限界) -/
-theorem cached_eq_parse (c : Cache) (f : File)
-    (det : ∀ f g : File, f.key = g.key → f.lines = g.lines) (hv : Valid c det) :
-    (cachedParse c f).1 = transcriptEvents f.lines ∧ Valid (cachedParse c f).2 det := by
+/-- キャッシュの中身は、その key の内容の解析結果と等しい -/
+def Valid (c : Cache) (content : Nat × Nat → Option (List Line)) : Prop :=
+  ∀ k v, c = some (k, v) → v = transcriptEvents (content k)
+
+/-- 同じ mtime と size ならキャッシュの結果は再解析の結果と等しく、キャッシュは正しいまま -/
+theorem cached_eq_parse (c : Cache) (f : File) (content : Nat × Nat → Option (List Line))
+    (hf : Consistent content f) (hv : Valid c content) :
+    (cachedParse c f).1 = transcriptEvents f.lines ∧ Valid (cachedParse c f).2 content := by
   unfold cachedParse
   split
   · rename_i k v
     split
     · rename_i hk
-      refine ⟨hv k v rfl f hk.symm, hv⟩
+      refine ⟨?_, hv⟩
+      rw [hv k v rfl, hf, hk]
     · refine ⟨rfl, ?_⟩
-      intro k' v' hc g hg
+      intro k' v' hc
       simp at hc
       obtain ⟨rfl, rfl⟩ := hc
-      rw [det g f hg]
+      rw [hf]
   · refine ⟨rfl, ?_⟩
-    intro k' v' hc g hg
+    intro k' v' hc
     simp at hc
     obtain ⟨rfl, rfl⟩ := hc
-    rw [det g f hg]
+    rw [hf]
+
+/-- 前提は空虚でない: どの content にも、それと整合する File があり、空のキャッシュは Valid -/
+theorem cached_premises_satisfiable (content : Nat × Nat → Option (List Line)) (k : Nat × Nat) :
+    Consistent content ⟨k, content k⟩ ∧ Valid none content :=
+  ⟨rfl, fun _ _ h => by cases h⟩
 
 /-! ## session id の検証 (要件 8) -/
 

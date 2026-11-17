@@ -873,6 +873,57 @@ mod tests {
     }
 
     #[test]
+    fn req3_detail_drops_reports_when_transcript_start_is_unknown() {
+        let d = tmp("req3");
+        let msg = d.join("m.msg");
+        fs::write(
+            &msg,
+            "from: wA:p1\nfrom_socket: /s/a\ntag: report\nsent_at: 2026-01-02T03:04:06Z\n\n\n前の session の報告\n",
+        )
+        .unwrap();
+        let snap = Snapshot {
+            files: vec![("m.msg".into(), msg)],
+            ..Default::default()
+        };
+        let row = PaneRow {
+            key: "k".into(),
+            pane: "wA:p1".into(),
+            tag: String::new(),
+            status: "working".into(),
+            name: String::new(),
+            title: String::new(),
+            sid: Some("sess1".into()),
+            tab_id: None,
+            ws: (String::new(), String::new()),
+            socket: "/s/a".into(),
+        };
+        let dirs = [d.clone()];
+        let reports = |body: &str| {
+            fs::write(d.join("sess1.jsonl"), body).unwrap();
+            let det = detail(
+                &snap,
+                &row,
+                &mut Transcripts::default(),
+                &mut Briefs::default(),
+                &dirs,
+            );
+            det.events.iter().filter(|e| e.kind == Kind::Report).count()
+        };
+        assert_eq!(reports(""), 0, "空の transcript には報告を帰属させないはず");
+        assert_eq!(
+            reports("not json\n"),
+            0,
+            "壊れた transcript には報告を帰属させないはず"
+        );
+        assert_eq!(
+            reports(&format!("{T}\n")),
+            1,
+            "開始時刻が分かれば開始以降の報告は帰属するはず"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn parse_msg_headers_and_body() {
         let m = parse_msg(
             "from: wA:p1\ntag: progress\nsent_at: 2026-01-02T03:04:05Z\n\n\n[progress] 調査\n",

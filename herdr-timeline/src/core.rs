@@ -182,11 +182,14 @@ fn paste_body(c: &str) -> String {
     first_line(&s)
 }
 
-/// PR は URL の初出だけ
+/// PR は URL の初出だけ。除外行は seen にも入れない (後の除外されない同じ PR を隠さないため)
 pub fn line_events(lines: &[Line]) -> Vec<Event> {
     let mut seen: Vec<&str> = Vec::new();
     let mut out = Vec::new();
     for (i, l) in lines.iter().enumerate() {
+        if excluded(l) {
+            continue;
+        }
         if l.typ == "pr-link" {
             if let (Some(ts), Some(u)) = (l.ts, l.pr.as_deref()) {
                 if !seen.contains(&u) {
@@ -230,11 +233,12 @@ pub struct Pane {
     pub since: Option<i64>,
 }
 
-/// from_socket の無い旧形式は、どの session の pane か決められないので帰属させない
+/// from_socket の無い旧形式は、どの session の pane か決められないので帰属させない。
+/// since が無い (transcript が空・壊れ・読めない) ときも、前の session の報告かを判別できないので帰属させない
 pub fn attributed(p: &Pane, m: &Msg) -> bool {
     m.from_socket.as_deref() == Some(p.socket.as_str())
         && m.from_pane == p.pane
-        && p.since.is_none_or(|s| s <= m.ts)
+        && p.since.is_some_and(|s| s <= m.ts)
 }
 
 fn allowed(c: char) -> bool {
@@ -498,6 +502,49 @@ mod tests {
         assert!(
             !attributed(&p, &m(Some("/s/a"), 99)),
             "session 開始前の msg は帰属しないはず"
+        );
+        let unknown = Pane { since: None, ..p };
+        assert!(
+            !attributed(&unknown, &m(Some("/s/a"), 200)),
+            "開始時刻が分からない pane には帰属しないはず"
+        );
+    }
+
+    #[test]
+    fn req2_excluded_pr_link_hides_and_does_not_mask_later_pr() {
+        type Set = fn(&mut Line);
+        let pr = |set: Set| {
+            let mut l = Line {
+                ts: Some(100),
+                typ: "pr-link".into(),
+                pr: Some("https://example.test/o/r/pull/1".into()),
+                pr_label: "o/r#1".into(),
+                ..Default::default()
+            };
+            set(&mut l);
+            l
+        };
+        let cases: [(&str, Set); 3] = [
+            ("isMeta", |l| l.is_meta = true),
+            ("isSidechain", |l| l.is_sidechain = true),
+            ("isCompactSummary", |l| l.is_compact_summary = true),
+        ];
+        for (name, set) in cases {
+            assert!(
+                line_events(&[pr(set)]).is_empty(),
+                "{name} が付いた pr-link は出ないはず"
+            );
+            let es = line_events(&[pr(set), pr(|_| {})]);
+            assert_eq!(
+                es.iter().map(|e| e.seq).collect::<Vec<_>>(),
+                [1],
+                "{name} の pr-link は seen に入らず、後の同じ PR が出るはず"
+            );
+        }
+        assert_eq!(
+            line_events(&[pr(|_| {})]).len(),
+            1,
+            "除外が無ければ出るはず"
         );
     }
 
