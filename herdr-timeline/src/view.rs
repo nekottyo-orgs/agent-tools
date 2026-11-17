@@ -2,7 +2,7 @@
 
 use crate::core::{group, total, Event, Kind, Status};
 use crate::data::{Detail, Goal, Run};
-use crate::text::{age_text, clip, fit, fmt_stamp, pad, tl_body, width_of, wrap};
+use crate::text::{age_text, clip, clip_head, fit, fmt_stamp, pad, tl_body, width_of, wrap};
 use std::collections::HashMap;
 
 const NAME_MAX: usize = 44;
@@ -289,12 +289,12 @@ pub fn layout(v: &View) -> (Vec<String>, Vec<(String, String)>, Option<String>) 
             if whole {
                 let mut body = format!("{lead}{nm} {ag}{mid}");
                 if first {
-                    body += &format!(" {}", clip(&x.tag, pw as usize));
+                    body += &format!(" {}", clip_head(&x.tag, pw as usize));
                 }
                 lines.push(blank.clone() + &paint(body.trim_end(), ALERT_STYLE));
             } else {
                 let tag = if first {
-                    paint(&format!(" {}", clip(&x.tag, pw as usize)), "2")
+                    paint(&format!(" {}", clip_head(&x.tag, pw as usize)), "2")
                 } else {
                     String::new()
                 };
@@ -476,11 +476,11 @@ mod tests {
 
     #[test]
     fn long_pane_tag_is_clipped_to_reserved_width() {
-        let tag = "very-long-session-name-for-test/wA:p1";
-        let rows = [
-            row("a", "working", tag, None),
-            row("b", "blocked", tag, None),
-        ];
+        let (t1, t2) = (
+            "very-long-session-name-for-test/wA:p1",
+            "very-long-session-name-for-test/wA:p2",
+        );
+        let rows = [row("a", "working", t1, None), row("b", "blocked", t2, None)];
         let (names, ws) = (HashMap::new(), HashMap::new());
         let v = View {
             rows: &rows,
@@ -502,9 +502,15 @@ mod tests {
             "どの行も表示幅を超えないはず: {lines:?}"
         );
         assert!(
-            !lines.iter().any(|l| l.contains(tag)),
+            !lines.iter().any(|l| l.contains(t1) || l.contains(t2)),
             "tag は切り詰められるはず: {lines:?}"
         );
+        for id in ["/wA:p1", "/wA:p2"] {
+            assert!(
+                lines.iter().any(|l| l.contains(id)),
+                "切り詰めても末尾の pane id は残るはず ({id}): {lines:?}"
+            );
+        }
     }
 
     #[test]

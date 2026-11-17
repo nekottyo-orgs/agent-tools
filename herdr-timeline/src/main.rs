@@ -38,7 +38,7 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
 オプション:
   --once             1 回描画して終わる
   --interval N       更新の間隔 (秒、既定 5、上限 86400)
-  --width N          表示幅を固定する (既定は端末幅 - 1、最小 30)
+  --width N          表示幅を固定する (既定は端末幅 - 1、最小 30、上限 1000)
   --timeline PANE_ID pane の Timeline を 1 回出して終わる (非対話)
   --runs-dir DIR     run のディレクトリ (DIR/<run>/run.md と DIR/<run>/inbox/{new,cur}/*.msg)。
                      環境変数 HERDR_TIMELINE_RUNS_DIR でも渡せる。無ければ報告・進捗・未処理の報告を出さない
@@ -66,10 +66,11 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
 終了コード:
   0  正常 (-h、--once・--timeline の描画、対話の終了)
   1  --timeline の pane が見つからない
-  2  引数の誤り (--interval が 86400 を超える場合を含む)
+  2  引数の誤り (--interval が 86400、--width が 1000 を超える場合を含む)
 ";
 
 const INTERVAL_MAX: u64 = 86400;
+const WIDTH_MAX: u64 = 1000;
 
 struct Opts {
     once: bool,
@@ -99,16 +100,16 @@ fn parse_args(args: &[String]) -> Result<Option<Opts>, String> {
             Ok(n) if n > 0 => Ok(n),
             _ => Err(format!("{a} は正の整数で指定する ({v})")),
         };
-        // Instant への加算が overflow しない範囲に収める
-        let interval = |v: String| match positive(v)? {
-            n if n > INTERVAL_MAX => Err(format!("{a} は {INTERVAL_MAX} 以下で指定する ({n})")),
+        // --interval は Instant への加算が overflow しない範囲、--width は 1 行の確保が膨らまない範囲に収める
+        let bounded = |v: String, max: u64| match positive(v)? {
+            n if n > max => Err(format!("{a} は {max} 以下で指定する ({n})")),
             n => Ok(n),
         };
         match a.as_str() {
             "-h" | "--help" => return Ok(None),
             "--once" => o.once = true,
-            "--interval" => o.interval = interval(value()?)?,
-            "--width" => o.width = Some(positive(value()?)? as usize),
+            "--interval" => o.interval = bounded(value()?, INTERVAL_MAX)?,
+            "--width" => o.width = Some(bounded(value()?, WIDTH_MAX)? as usize),
             "--timeline" => o.timeline = Some(value()?),
             "--runs-dir" => o.runs = Some(PathBuf::from(value()?)),
             _ => return Err(format!("不明な引数 {a}")),

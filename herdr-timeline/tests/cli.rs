@@ -301,6 +301,7 @@ fn req6_bad_arguments_exit_2() {
         &["--width", "0"],
         &["--interval", "abc"],
         &["--interval", "86401"],
+        &["--width", "1001"],
         &["--interval", "18446744073709551615"],
         &["--bogus"],
         &["--runs-dir"],

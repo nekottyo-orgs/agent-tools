@@ -16,7 +16,7 @@ herdr (端末の multiplexer) の pane を「要対応 / 作業中 / done・idle
   - transcript の指示が指す brief (`brief-<name>.md`)
 - 外部入力 (transcript と inbox の本文、pane の label と title) は、端末に出す前に CSI 列を丸ごと落とし、残りの制御文字を空白にする
 - 読めないファイルや herdr の失敗では落ちない。イベント 0 件か、画面上部の警告 1 行になる
-- inbox の報告は `from` (pane id)、`from_socket` (送り手の herdr の socket)、`sent_at` が transcript の開始以降、の 3 つが合うときだけその pane のものとみなす。`from_socket` の無い旧形式は帰属させない (別 session の同じ pane id と区別できないため)
+- inbox の報告は `from` (pane id)、`from_socket` (送り手の herdr の socket)、`sent_at` が transcript の開始以降、の 3 つが合うときだけその pane のものとみなす。transcript が空か壊れていて開始時刻が分からない pane には帰属させない。`from_socket` の無い旧形式は帰属させない (別 session の同じ pane id と区別できないため)
 
 ## 使い方
 
@@ -28,8 +28,8 @@ herdr-timeline [--once] [--interval N] [--width N] [--timeline PANE_ID] [--runs-
 | --- | --- |
 | `--once` | 1 回描画して終わる |
 | `--interval N` | 更新の間隔 (秒、既定 5、上限 86400) |
-| `--width N` | 表示幅を固定する (既定は端末幅 - 1、最小 30) |
-| `--timeline PANE_ID` | pane の Timeline を 1 回出して終わる (非対話) |
+| `--width N` | 表示幅を固定する (既定は端末幅 - 1、最小 30、上限 1000) |
+| `--timeline PANE_ID` | pane の Timeline を 1 回出して終わる (非対話)。`<session>/<pane>` でなく pane id だけを渡したときは、今の session の pane を優先し、無ければ他の session から探す |
 | `--runs-dir DIR` | run のディレクトリ (`DIR/<run>/run.md`、`DIR/<run>/inbox/{new,cur}/*.msg`)。無ければ報告・進捗・未処理の報告を出さないだけで動く |
 | `-h`, `--help` | 説明を出す |
 
@@ -50,14 +50,14 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 | --- | --- |
 | 0 | 正常 (`-h`、`--once`・`--timeline` の描画、対話の終了) |
 | 1 | `--timeline` の pane が見つからない |
-| 2 | 引数の誤り (値の欠落、値が `-` で始まる、正の整数でない、`--interval` が 86400 を超える、不明な引数) |
+| 2 | 引数の誤り (値の欠落、値が `-` で始まる、正の整数でない、`--interval` が 86400 を超える、`--width` が 1000 を超える、不明な引数) |
 
 ### キー操作
 
 | キー | 動作 |
 | --- | --- |
 | `↑` `↓` / `j` `k` | 要対応と作業中の行を選ぶ |
-| `Enter` | 選んだ行の tab へ移動する (`herdr tab focus`) |
+| `Enter` | 選んだ行の tab へ移動する (`herdr tab focus`)。別 session の行では何もしない |
 | `t` | 選んだ行の Timeline を開閉する |
 | `q` | 終了する (Ctrl-C でも端末を戻して終わる) |
 

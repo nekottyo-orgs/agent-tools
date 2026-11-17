@@ -52,7 +52,8 @@ const WIDE: &[(u32, u32)] = &[
     (0xFF00, 0xFF60),
     (0xFFE0, 0xFFE6),
     (0x1F300, 0x1F64F),
-    (0x1F900, 0x1F9FF),
+    (0x1F680, 0x1F6FF),
+    (0x1F900, 0x1FAFF),
     (0x20000, 0x2FFFD),
     (0x30000, 0x3FFFD),
 ];
@@ -87,6 +88,25 @@ pub fn clip(s: &str, n: usize) -> String {
         w += wide(c);
     }
     out + "…"
+}
+
+/// 表示幅 n 以内に切り詰める。超えたときは先頭を … にして末尾を残す (末尾に識別子が来る文字列用)
+pub fn clip_head(s: &str, n: usize) -> String {
+    if width_of(s) <= n {
+        return s.to_string();
+    }
+    if n == 0 {
+        return String::new();
+    }
+    let (mut out, mut w) = (Vec::new(), 0);
+    for c in s.chars().rev() {
+        if w + wide(c) > n - 1 {
+            break;
+        }
+        out.push(c);
+        w += wide(c);
+    }
+    "…".to_string() + &out.into_iter().rev().collect::<String>()
 }
 
 pub fn pad(s: &str, n: usize) -> String {
@@ -551,7 +571,17 @@ mod tests {
     fn widths_and_clip() {
         assert_eq!(width_of("aあ한Ａ"), 7, "全角は 2 桁のはず");
         assert_eq!(width_of("▲●✓…"), 4, "曖昧幅の記号は 1 桁のはず");
+        assert_eq!(
+            width_of("\u{1F600}\u{1F680}\u{1FA70}"),
+            6,
+            "絵文字は顔・乗り物・追加記号のどれも 2 桁のはず"
+        );
         assert_eq!(clip("あいうえお", 5), "あい…", "幅を超えたら … で切るはず");
+        assert_eq!(
+            clip_head("あいうえお", 5),
+            "…えお",
+            "先頭側を … にして末尾を残すはず"
+        );
         assert_eq!(pad("ab", 4), "ab  ", "幅まで空白で埋めるはず");
     }
 
