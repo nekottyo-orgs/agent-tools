@@ -1,0 +1,58 @@
+# herdr-timeline/ の lint・回帰テストと Lean の model の build。tool ごとに workflow を分け、path filter で他の tool の変更では走らせない。
+# workspace の root の Cargo.toml (release profile) と Cargo.lock は全 tool に効くので、変更されたら走らせる。
+# toolchain の version (Rust 1.98 / Lean v4.35.0 / elan v4.2.4) は bash-gates.yml と同じ値に固定する。elan は release asset の sha256 でも固定する。
+# action は .github/workflows/actions.lock に固定する (gh actions-lock で更新)。
+name: herdr-timeline
+
+on:
+  push:
+    paths:
+      - 'herdr-timeline/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/herdr-timeline.yml'
+      - '.github/workflows/actions.lock'
+  pull_request:
+    paths:
+      - 'herdr-timeline/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/herdr-timeline.yml'
+      - '.github/workflows/actions.lock'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup toolchain install 1.98 --profile minimal --component rustfmt,clippy && rustup default 1.98
+
+      # elan-init.sh は binary を releases/latest から取り version を固定できないので使わず、
+      # v4.2.4 の release asset を sha256 で検証してから展開する (ubuntu-latest は x86_64)。手順は bash-gates.yml と同じ
+      - name: Install Lean
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o elan.tar.gz https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
+          echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  elan.tar.gz" | sha256sum -c -
+          tar xzf elan.tar.gz
+          ./elan-init -y --no-modify-path --default-toolchain leanprover/lean4:v4.35.0
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Format
+        run: cargo fmt --check -p herdr-timeline
+
+      - name: Lint
+        run: cargo clippy --locked -p herdr-timeline --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked -p herdr-timeline
+
+      - name: Lean
+        run: cd herdr-timeline/lean && lake build

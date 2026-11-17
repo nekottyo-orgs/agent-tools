@@ -2,7 +2,7 @@
 # [profile.release] は workspace の root でしか効かない (member 側に書くと無視される) ので、ここに置く。
 [workspace]
 resolver = "2"
-members = ["bash-gates", "secret-scan"]
+members = ["bash-gates", "herdr-timeline", "secret-scan"]
 
 # bash-gates は Bash を打つたびに起動するので起動時間を最優先にする。secret-scan も commit のたびに起動する
 [profile.release]

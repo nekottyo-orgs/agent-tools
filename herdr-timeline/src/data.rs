@@ -1,0 +1,947 @@
+// herdr・run・inbox・transcript・brief の読み取り。どれも読むだけで、書き込みは herdr tab focus (main 側) しかしない。
+// 外部コマンドやファイルの失敗は落とさず、空か警告 1 行にする。
+
+use crate::core::{
+    self, attributed, last_brief, order, status, transcript_events, valid_sid, Class, Event, Kind,
+    Line, Msg, Progress, Status,
+};
+use crate::text::{
+    brief_path, clean, first_line, goal_of, parse_steps, parse_time, progress_names, squash,
+};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::fs;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, SystemTime};
+
+pub struct Env {
+    pub herdr: Vec<String>,
+    pub herdr_dir: PathBuf,
+    pub projects: PathBuf,
+    pub runs: Option<PathBuf>,
+    pub own_sock: PathBuf,
+}
+
+impl Env {
+    pub fn from_env(runs: Option<PathBuf>) -> Env {
+        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let home = PathBuf::from(var("HOME").unwrap_or_default());
+        let herdr_dir = var("HERDR_TIMELINE_HERDR_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".config/herdr"));
+        let own_sock = var("HERDR_SOCKET_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| herdr_dir.join("herdr.sock"));
+        Env {
+            herdr: var("HERDR_TIMELINE_HERDR")
+                .unwrap_or_else(|| "herdr".into())
+                .split_whitespace()
+                .map(String::from)
+                .collect(),
+            herdr_dir,
+            projects: var("HERDR_TIMELINE_PROJECTS")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".claude/projects")),
+            runs: runs.or_else(|| var("HERDR_TIMELINE_RUNS_DIR").map(PathBuf::from)),
+            own_sock,
+        }
+    }
+}
+
+/// socket の比較は両側を正規化してから。できなければ文字列のまま (旧 session の socket は消えていることがある)
+pub fn canon(p: &str) -> String {
+    fs::canonicalize(p)
+        .map(|c| c.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| p.to_string())
+}
+
+/// herdr を呼んで result を返す。std に timeout が無いので wait は別 thread に任せる。
+/// stdout を読まずに待つと、出力がパイプの容量を超えたときに子が止まるため wait_with_output を使う
+pub fn herdr(env: &Env, args: &[&str], sock: Option<&Path>) -> Result<Value, String> {
+    let what = format!("herdr {}", args.join(" "));
+    serde_json::from_slice::<Value>(&run_herdr(env, args, sock)?)
+        .ok()
+        .and_then(|v| v.get("result").cloned())
+        .ok_or_else(|| format!("{what} の出力が JSON でない"))
+}
+
+/// herdr を 10 秒の timeout 付きで呼び、stdout を返す
+pub fn run_herdr(env: &Env, args: &[&str], sock: Option<&Path>) -> Result<Vec<u8>, String> {
+    let (prog, pre) = env.herdr.split_first().ok_or("HERDR_TIMELINE_HERDR が空")?;
+    let mut cmd = Command::new(prog);
+    cmd.args(pre)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if let Some(s) = sock {
+        cmd.env("HERDR_SOCKET_PATH", s);
+    }
+    let what = format!("herdr {}", args.join(" "));
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("{what} を起動できない ({e})"))?;
+    let pid = child.id() as libc::pid_t;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    match rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(Ok(out)) if out.status.success() => Ok(out.stdout),
+        Ok(Ok(out)) => Err(format!(
+            "{what} が終了コード {} で失敗",
+            out.status.code().unwrap_or(-1)
+        )),
+        Ok(Err(e)) => Err(format!("{what} を待てない ({e})")),
+        Err(_) => {
+            // SAFETY: 自分が起動した子の pid に signal を送るだけ
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            Err(format!("{what} が 10 秒で応答しない"))
+        }
+    }
+}
+
+/// [(session 名, socket)]。socket が 1 つ以下なら今の環境の 1 session として扱う
+fn sessions(env: &Env) -> Vec<(String, Option<PathBuf>)> {
+    let mut found = vec![("default".to_string(), env.herdr_dir.join("herdr.sock"))];
+    if let Ok(rd) = fs::read_dir(env.herdr_dir.join("sessions")) {
+        let mut v: Vec<_> = rd
+            .flatten()
+            .map(|e| {
+                (
+                    e.file_name().to_string_lossy().into_owned(),
+                    e.path().join("herdr.sock"),
+                )
+            })
+            .collect();
+        v.sort();
+        found.extend(v);
+    }
+    found.retain(|(_, p)| p.exists());
+    if found.len() > 1 {
+        found.into_iter().map(|(n, p)| (n, Some(p))).collect()
+    } else {
+        vec![(String::new(), None)]
+    }
+}
+
+pub struct PaneRow {
+    pub key: String,
+    pub pane: String,
+    pub tag: String,
+    pub status: String,
+    pub name: String,
+    pub title: String,
+    pub sid: Option<String>,
+    pub tab_id: Option<String>,
+    pub ws: (String, String),
+    pub socket: String,
+}
+
+pub struct Run {
+    pub orch: String,
+    pub new: usize,
+    pub oldest: Option<i64>,
+}
+
+pub struct InMsg {
+    pub file: String,
+    pub path: PathBuf,
+    pub msg: Msg,
+}
+
+#[derive(Default)]
+pub struct Snapshot {
+    pub warn: Vec<String>,
+    pub panes: Vec<PaneRow>,
+    pub ws_names: HashMap<(String, String), String>,
+    pub names: HashMap<String, String>,
+    pub runs: Vec<Run>,
+    /// inbox/new と inbox/cur の *.msg (ファイル名, パス)。中身は使う側が read_msgs で必要なものだけ読む
+    pub files: Vec<(String, PathBuf)>,
+}
+
+fn arr<'a>(v: &'a Value, k: &str) -> &'a [Value] {
+    v.get(k)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+fn s(v: &Value, k: &str) -> String {
+    v.get(k).and_then(Value::as_str).unwrap_or("").to_string()
+}
+
+pub fn status_of(s: &str) -> &'static str {
+    match s {
+        "blocked" => "blocked",
+        "working" => "working",
+        "idle" => "idle",
+        "done" => "done",
+        _ => "unknown",
+    }
+}
+
+pub fn gather(env: &Env) -> Snapshot {
+    let mut snap = Snapshot::default();
+    let own = canon(&env.own_sock.to_string_lossy());
+    let mut dup = Vec::new();
+    for (name, sock) in sessions(env) {
+        let socket = sock
+            .as_ref()
+            .map_or_else(|| own.clone(), |p| canon(&p.to_string_lossy()));
+        let foreign = !name.is_empty() && socket != own;
+        let at = |e: String| {
+            if name.is_empty() {
+                e
+            } else {
+                format!("{name}: {e}")
+            }
+        };
+        let panes = match herdr(env, &["pane", "list"], sock.as_deref()) {
+            Ok(v) => v,
+            Err(e) => {
+                snap.warn.push(at(e));
+                continue;
+            }
+        };
+        let mut get = |what: &str| {
+            herdr(env, &[what, "list"], sock.as_deref()).unwrap_or_else(|e| {
+                snap.warn.push(at(e));
+                Value::Null
+            })
+        };
+        let (wl, tl) = (get("workspace"), get("tab"));
+        let wl = arr(&wl, "workspaces");
+        // 同じ label の workspace は画面で見分けがつかないので、Spaces 一覧の順番を足す
+        let labels: Vec<(String, String, Option<u64>)> = wl
+            .iter()
+            .map(|w| {
+                let id = s(w, "workspace_id");
+                let l = clean(&s(w, "label"));
+                (
+                    id.clone(),
+                    if l.is_empty() {
+                        format!("workspace {id}")
+                    } else {
+                        l
+                    },
+                    w.get("number").and_then(Value::as_u64),
+                )
+            })
+            .collect();
+        let mut ws = HashMap::new();
+        for (id, l, n) in &labels {
+            let shown = match n {
+                Some(n) if labels.iter().filter(|x| &x.1 == l).count() > 1 => {
+                    format!("{l} ({n} 番目)")
+                }
+                _ => l.clone(),
+            };
+            snap.ws_names.insert(
+                (name.clone(), id.clone()),
+                if foreign {
+                    format!("{name} / {shown}")
+                } else {
+                    shown.clone()
+                },
+            );
+            ws.insert(id.clone(), shown);
+        }
+        let tabs: HashMap<String, &Value> = arr(&tl, "tabs")
+            .iter()
+            .map(|t| (s(t, "tab_id"), t))
+            .collect();
+        for p in arr(&panes, "panes") {
+            let pane = clean(&s(p, "pane_id"));
+            let tab = tabs.get(&s(p, "tab_id"));
+            // pane の label は同じ tab に pane が複数あるときだけ足す (単独なら tab の label と同じ)
+            let mut parts = vec![
+                ws.get(&s(p, "workspace_id")).cloned().unwrap_or_default(),
+                tab.map(|t| clean(&s(t, "label"))).unwrap_or_default(),
+            ];
+            if tab
+                .and_then(|t| t.get("pane_count"))
+                .and_then(Value::as_u64)
+                .unwrap_or(1)
+                > 1
+            {
+                parts.push(clean(&s(p, "label")));
+            }
+            let mut seen: Vec<String> = Vec::new();
+            for x in parts {
+                if !x.is_empty() && !seen.contains(&x) {
+                    seen.push(x);
+                }
+            }
+            let pname = seen.join(" / ");
+            if snap.names.insert(pane.clone(), pname.clone()).is_some() {
+                dup.push(pane.clone());
+            }
+            let tag = if name.is_empty() {
+                pane.clone()
+            } else {
+                format!("{name}/{pane}")
+            };
+            let sid = p
+                .get("agent_session")
+                .map(|a| s(a, "value"))
+                .filter(|v| !v.is_empty());
+            snap.panes.push(PaneRow {
+                key: tag.clone(),
+                tag,
+                status: status_of(&s(p, "agent_status")).to_string(),
+                name: if pname.is_empty() {
+                    clean(&s(p, "label"))
+                } else {
+                    pname
+                },
+                title: clean(&s(p, "terminal_title_stripped")),
+                sid,
+                // 別 session の tab は今の画面に無いので移動の対象にしない
+                tab_id: Some(s(p, "tab_id")).filter(|t| !t.is_empty() && !foreign),
+                ws: (name.clone(), s(p, "workspace_id")),
+                socket: socket.clone(),
+                pane,
+            });
+        }
+    }
+    for d in dup {
+        snap.names.remove(&d); // 別 session に同じ id がある pane は名前を引けない
+    }
+    snap.panes
+        .sort_by(|a, b| a.pane.cmp(&b.pane).then(a.key.cmp(&b.key)));
+    if let Some(runs) = &env.runs {
+        read_runs(runs, &mut snap);
+    }
+    snap
+}
+
+fn mtime(p: &Path) -> Option<i64> {
+    let t = fs::metadata(p).ok()?.modified().ok()?;
+    Some(t.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs() as i64)
+}
+
+fn msg_files(dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut v: Vec<_> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+        .filter(|(n, _)| n.ends_with(".msg"))
+        .collect();
+    v.sort();
+    v
+}
+
+/// ヘッダは空行まで key: value、本文はその後
+pub fn parse_msg(text: &str) -> Option<Msg> {
+    let (head, body) = text.split_once("\n\n").unwrap_or((text, ""));
+    let h: HashMap<&str, &str> = head
+        .lines()
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| (k.trim(), v.trim()))
+        .collect();
+    Some(Msg {
+        from_pane: h.get("from")?.to_string(),
+        from_socket: h
+            .get("from_socket")
+            .filter(|v| !v.is_empty())
+            .map(|v| canon(v)),
+        ts: parse_time(h.get("sent_at")?)?,
+        tag: h.get("tag").unwrap_or(&"").to_string(),
+        body: clean(&first_line(body)),
+    })
+}
+
+/// run は RUNS/<run>/run.md を持つディレクトリ。inbox は new と cur だけを見る (tmp などの書きかけを拾わない)
+fn read_runs(dir: &Path, snap: &mut Snapshot) {
+    let mut names: Vec<PathBuf> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    names.sort();
+    for run in names {
+        let Ok(md) = fs::read(run.join("run.md")) else {
+            continue;
+        };
+        let md = String::from_utf8_lossy(&md);
+        let orch = md
+            .lines()
+            .find_map(|l| l.strip_prefix("orchestrator_pane:"))
+            .map(clean)
+            .unwrap_or_default();
+        let new = msg_files(&run.join("inbox/new"));
+        snap.runs.push(Run {
+            orch,
+            new: new.len(),
+            oldest: new.iter().filter_map(|(_, p)| mtime(p)).min(),
+        });
+        snap.files.extend(new);
+        snap.files.extend(msg_files(&run.join("inbox/cur")));
+    }
+}
+
+/// msg の名前は <prio>-<micros>-<tag>-<from>-<rand>.msg。from は ':' や '-' を含み得るが、tag は先頭から 3 番目で決まる
+fn name_tag(file: &str) -> Option<&str> {
+    file.strip_suffix(".msg")?.split('-').nth(2)
+}
+
+/// only_progress なら名前の tag が progress のものだけを開く (全 pane の進捗を毎周期見るので、他の msg は開かない)
+pub fn read_msgs(files: &[(String, PathBuf)], only_progress: bool) -> Vec<InMsg> {
+    files
+        .iter()
+        .filter(|(n, _)| !only_progress || name_tag(n) == Some("progress"))
+        .filter_map(|(file, path)| {
+            let b = fs::read(path).ok()?;
+            let msg = parse_msg(&String::from_utf8_lossy(&b))?;
+            Some(InMsg {
+                file: file.clone(),
+                path: path.clone(),
+                msg,
+            })
+        })
+        .collect()
+}
+
+/// pane に帰属した msg をファイル名順に。位置が seq になるので readdir の順に依らせない
+fn mine<'a>(msgs: &'a [InMsg], p: &core::Pane) -> Vec<&'a InMsg> {
+    let mut v: Vec<&InMsg> = msgs.iter().filter(|m| attributed(p, &m.msg)).collect();
+    v.sort_by(|a, b| (&a.file, &a.path).cmp(&(&b.file, &b.path)));
+    v
+}
+
+/// projects 直下のディレクトリ。glob を使わず read_dir して session_id のファイル名を join する
+pub fn project_dirs(projects: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = fs::read_dir(projects)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .collect();
+    v.sort();
+    v
+}
+
+pub fn find_transcript(dirs: &[PathBuf], sid: Option<&str>) -> Option<PathBuf> {
+    let sid = sid.filter(|s| valid_sid(s))?;
+    dirs.iter()
+        .map(|d| d.join(format!("{sid}.jsonl")))
+        .find(|p| p.is_file())
+}
+
+/// 経過の起点に使う transcript の最終書き込み。中身は読まない
+pub fn transcript_mtime(dirs: &[PathBuf], sid: Option<&str>) -> Option<i64> {
+    mtime(&find_transcript(dirs, sid)?)
+}
+
+#[derive(Clone, Default)]
+pub struct Parsed {
+    pub events: Vec<Event>,
+    pub first: Option<i64>,
+    /// 指示 (classify が指示か貼り付け) の時刻と、含む brief のパス
+    pub instrs: Vec<(i64, Option<String>)>,
+}
+
+fn to_line(v: &Value) -> Line {
+    let b = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+    let txt = |k: &str| match v.get(k) {
+        Some(Value::String(s)) => s.clone(),
+        Some(x) => x.to_string(),
+        None => String::new(),
+    };
+    Line {
+        ts: v
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(parse_time),
+        typ: s(v, "type"),
+        is_meta: b("isMeta"),
+        is_sidechain: b("isSidechain"),
+        is_compact_summary: b("isCompactSummary"),
+        content: v
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_str)
+            .map(String::from),
+        pr: v.get("prUrl").and_then(Value::as_str).map(String::from),
+        pr_label: format!("{}#{}", txt("prRepository"), txt("prNumber")),
+    }
+}
+
+/// 巨大な行 (tool の出力など) を JSON にしないよう、user / pr-link の行だけを解釈する。
+/// 他の行も空の Line として残すのは、連番を transcript の行番号に揃えるため
+pub fn parse_lines(bytes: &[u8]) -> Vec<Line> {
+    String::from_utf8_lossy(bytes)
+        .split('\n')
+        .map(|raw| {
+            if !(raw.contains("\"type\":\"user\"") || raw.contains("\"type\":\"pr-link\"")) {
+                return Line::default();
+            }
+            serde_json::from_str::<Value>(raw)
+                .map(|v| to_line(&v))
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+/// 指示 (classify が指示か貼り付け) なら (時刻, 含む brief のパス)
+fn instr_brief(l: &Line) -> Option<(i64, Option<String>)> {
+    if l.typ != "user" || core::excluded(l) {
+        return None;
+    }
+    let (ts, c) = (l.ts?, l.content.as_deref()?);
+    matches!(core::classify(c), Class::Instr | Class::Paste).then(|| (ts, brief_path(c)))
+}
+
+/// 解析結果のキャッシュ。開いている Timeline は 1 つなので 1 件だけ持つ
+#[derive(Default)]
+pub struct Transcripts {
+    key: Option<(PathBuf, SystemTime, u64)>,
+    val: Parsed,
+    pub parses: usize,
+}
+
+impl Transcripts {
+    /// 読めない transcript はイベント 0 件。失敗はキャッシュしない (権限を直したら次の周期で読む)
+    pub fn get(&mut self, path: &Path) -> Parsed {
+        let key = fs::metadata(path)
+            .ok()
+            .and_then(|m| Some((path.to_path_buf(), m.modified().ok()?, m.len())));
+        if key.is_some() && key == self.key {
+            return self.val.clone();
+        }
+        let lines = fs::read(path).ok().map(|b| parse_lines(&b));
+        let events = transcript_events(lines.as_deref());
+        let Some(lines) = lines else {
+            return Parsed::default();
+        };
+        self.parses += 1;
+        let first = lines.iter().filter_map(|l| l.ts).min();
+        let instrs = lines.iter().filter_map(instr_brief).collect();
+        self.val = Parsed {
+            events,
+            first,
+            instrs,
+        };
+        self.key = key;
+        self.val.clone()
+    }
+}
+
+/// pane 行の要約と step の行の元。brief を読めなければ goal は None
+#[derive(Default)]
+pub struct Goal {
+    pub goal: Option<String>,
+    pub steps: Vec<String>,
+    pub status: Option<Status>,
+}
+
+/// transcript ごとの追跡状態。transcript は追記だけなので、前回読んだ位置 (offset) から後ろだけを読む
+#[derive(Clone, Default)]
+pub struct BriefTracker {
+    offset: u64,
+    pub first_ts: Option<i64>,
+    pub last_brief: Option<String>,
+    pub last_brief_ts: Option<i64>,
+}
+
+/// 全 pane の行にゴールと進捗を出すための軽い追跡。Timeline 用の 1 件キャッシュ (Transcripts) とは別に持つ
+#[derive(Default)]
+pub struct Briefs {
+    tracks: HashMap<PathBuf, BriefTracker>,
+    docs: HashMap<String, (SystemTime, Option<String>, Vec<String>)>,
+    /// transcript から読んだバイト数。差分だけを読んでいることをテストで確かめる
+    pub read_bytes: u64,
+}
+
+impl Briefs {
+    /// 読めなければ状態を変えず None (ゴール無しで続ける)
+    pub fn scan(&mut self, path: &Path) -> Option<BriefTracker> {
+        let size = fs::metadata(path).ok()?.len();
+        let mut t = self.tracks.get(path).cloned().unwrap_or_default();
+        if size < t.offset {
+            t = BriefTracker::default(); // 縮んだら別物とみなして最初から読む
+        }
+        let mut f = fs::File::open(path).ok()?;
+        f.seek(SeekFrom::Start(t.offset)).ok()?;
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf).ok()?;
+        self.read_bytes += buf.len() as u64;
+        // 書きかけの行は次の周期に回す
+        let end = buf.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        for l in parse_lines(&buf[..end]) {
+            let Some(ts) = l.ts else { continue };
+            t.first_ts = Some(t.first_ts.map_or(ts, |f| f.min(ts)));
+            if let Some((ts, b @ Some(_))) = instr_brief(&l) {
+                t.last_brief = last_brief(&[t.last_brief.take(), b]);
+                t.last_brief_ts = Some(ts);
+            }
+        }
+        t.offset += end as u64;
+        self.tracks.insert(path.to_path_buf(), t.clone());
+        Some(t)
+    }
+
+    /// brief の H1 と steps。(path, mtime) でキャッシュする
+    fn doc(&mut self, path: &str) -> Option<(Option<String>, Vec<String>)> {
+        let m = fs::metadata(path).ok()?.modified().ok()?;
+        if let Some((_, g, s)) = self.docs.get(path).filter(|d| d.0 == m) {
+            return Some((g.clone(), s.clone()));
+        }
+        let text = fs::read(path).ok()?;
+        let text = String::from_utf8_lossy(&text);
+        let (g, s) = (goal_of(&text), parse_steps(&text));
+        self.docs
+            .insert(path.to_string(), (m, g.clone(), s.clone()));
+        Some((g, s))
+    }
+
+    /// since は brief を指示した時刻。それより前の progress は前の brief に対するものなので数えない
+    fn goal(&mut self, brief: &str, since: i64, mine: &[&InMsg]) -> Goal {
+        let Some((goal, steps)) = self.doc(brief) else {
+            return Goal::default();
+        };
+        let ps: Vec<Progress> = mine
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.msg.tag == "progress" && m.msg.ts >= since)
+            .map(|(i, m)| Progress {
+                ts: m.msg.ts,
+                seq: i,
+                names: progress_names(&m.msg.body),
+            })
+            .collect();
+        Goal {
+            goal,
+            status: Some(status(&steps, &ps)),
+            steps,
+        }
+    }
+
+    /// pane 行のゴール。progress は read_msgs(.., true) で読んだ msg
+    pub fn pane_goal(&mut self, row: &PaneRow, dirs: &[PathBuf], progress: &[InMsg]) -> Goal {
+        let Some(t) = find_transcript(dirs, row.sid.as_deref()).and_then(|p| self.scan(&p)) else {
+            return Goal::default();
+        };
+        let (Some(brief), Some(since)) = (t.last_brief, t.last_brief_ts) else {
+            return Goal::default();
+        };
+        let p = core::Pane {
+            pane: row.pane.clone(),
+            socket: row.socket.clone(),
+            since: t.first_ts,
+        };
+        self.goal(&brief, since, &mine(progress, &p))
+    }
+}
+
+/// 展開した pane の Timeline・ゴール・進捗
+#[derive(Default)]
+pub struct Detail {
+    pub has_transcript: bool,
+    pub events: Vec<Event>,
+    pub goal: Goal,
+}
+
+pub fn detail(
+    snap: &Snapshot,
+    row: &PaneRow,
+    cache: &mut Transcripts,
+    briefs: &mut Briefs,
+    dirs: &[PathBuf],
+) -> Detail {
+    let Some(path) = find_transcript(dirs, row.sid.as_deref()) else {
+        return Detail::default();
+    };
+    let parsed = cache.get(&path);
+    let p = core::Pane {
+        pane: row.pane.clone(),
+        socket: row.socket.clone(),
+        since: parsed.first,
+    };
+    let msgs = read_msgs(&snap.files, false);
+    let mine = mine(&msgs, &p);
+    let mut events = parsed.events.clone();
+    events.extend(mine.iter().enumerate().map(|(i, m)| Event {
+        ts: m.msg.ts,
+        src: 1,
+        seq: i,
+        kind: Kind::Report,
+        body: m.msg.body.clone(),
+    }));
+    let mut d = Detail {
+        has_transcript: true,
+        events: order(events),
+        ..Default::default()
+    };
+    let bs: Vec<Option<String>> = parsed.instrs.iter().map(|(_, b)| b.clone()).collect();
+    if let Some(brief) = last_brief(&bs) {
+        let since = parsed
+            .instrs
+            .iter()
+            .rev()
+            .find(|(_, b)| b.as_ref() == Some(&brief))
+            .map_or(0, |x| x.0);
+        d.goal = briefs.goal(&brief, since, &mine);
+    }
+    d
+}
+
+/// pane 行の要約。ゴールが無ければ terminal の title
+pub fn summary(g: &Goal, title: &str) -> String {
+    let Some(goal) = &g.goal else {
+        return squash(title);
+    };
+    match (&g.status, g.steps.len()) {
+        (_, 0) | (None, _) => goal.clone(),
+        (Some(Status::Unreported), _) => format!("{goal}  進捗未報告"),
+        (Some(Status::Reported { done, .. }), m) => {
+            match g.steps.iter().find(|s| !done.contains(s)) {
+                Some(next) => format!("{goal}  {}/{m} {next}", done.len()),
+                None => format!("{goal}  {m}/{m}"),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d =
+            std::env::temp_dir().join(format!("herdr-timeline-unit-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    const T: &str =
+        r#"{"type":"user","timestamp":"2026-01-02T03:04:05Z","message":{"content":"直して"}}"#;
+
+    #[test]
+    fn req5_cache_by_path_mtime_size() {
+        let d = tmp("req5");
+        let f = d.join("s.jsonl");
+        fs::write(&f, format!("{T}\n")).unwrap();
+        let mut c = Transcripts::default();
+        assert_eq!(c.get(&f).events.len(), 1, "1 件読めるはず");
+        assert_eq!(c.get(&f).events.len(), 1, "2 回目も同じ結果のはず");
+        assert_eq!(c.parses, 1, "同じ mtime と size なら解析し直さないはず");
+        fs::write(&f, format!("{T}\n{T}\n")).unwrap();
+        assert_eq!(c.get(&f).events.len(), 2, "書き換えた内容を読むはず");
+        assert_eq!(c.parses, 2, "書き換えたら解析し直すはず");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn req1_unreadable_or_broken_transcript_is_empty() {
+        let d = tmp("req1");
+        let mut c = Transcripts::default();
+        assert!(
+            c.get(&d.join("missing.jsonl")).events.is_empty(),
+            "存在しない transcript は 0 件のはず"
+        );
+        let f = d.join("locked.jsonl");
+        fs::write(&f, format!("{T}\n")).unwrap();
+        // SAFETY: geteuid は引数を取らず失敗しない
+        if unsafe { libc::geteuid() } != 0 {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&f, fs::Permissions::from_mode(0o000)).unwrap();
+            assert!(
+                c.get(&f).events.is_empty(),
+                "権限の無い transcript は 0 件のはず"
+            );
+            fs::set_permissions(&f, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let mut bad = b"\xff\xfe broken\n".to_vec();
+        bad.extend_from_slice(T.as_bytes());
+        assert_eq!(
+            transcript_events(Some(&parse_lines(&bad))).len(),
+            1,
+            "途中の行が UTF-8 でなくても他の行は読むはず"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn brief_tracker_reads_only_appended_lines() {
+        let d = tmp("tracker");
+        let f = d.join("s.jsonl");
+        let brief = |name: &str, at: &str| {
+            format!(
+                r#"{{"type":"user","timestamp":"{at}","message":{{"content":"{}/brief-{name}.md を読んで"}}}}"#,
+                d.display()
+            ) + "\n"
+        };
+        let (l1, l2) = (
+            brief("a", "2026-01-02T03:00:00Z"),
+            brief("b", "2026-01-02T03:20:00Z"),
+        );
+        fs::write(&f, &l1).unwrap();
+        let mut b = Briefs::default();
+        let t = b.scan(&f).expect("読めるはず");
+        assert_eq!(b.read_bytes, l1.len() as u64, "1 回目は全体を読むはず");
+        assert!(
+            t.last_brief
+                .as_deref()
+                .is_some_and(|x| x.ends_with("brief-a.md")),
+            "brief を拾うはず"
+        );
+        let half = &l2[..10];
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&f)
+            .unwrap()
+            .write_all(half.as_bytes())
+            .unwrap();
+        let t = b.scan(&f).expect("読めるはず");
+        assert!(
+            t.last_brief
+                .as_deref()
+                .is_some_and(|x| x.ends_with("brief-a.md")),
+            "書きかけの行は次の周期に回すはず"
+        );
+        assert_eq!(
+            b.read_bytes,
+            (l1.len() + half.len()) as u64,
+            "2 回目は追記ぶんだけ読むはず"
+        );
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&f)
+            .unwrap()
+            .write_all(&l2.as_bytes()[10..])
+            .unwrap();
+        let t = b.scan(&f).expect("読めるはず");
+        assert_eq!(
+            b.read_bytes,
+            (l1.len() + half.len() + l2.len()) as u64,
+            "書きかけの行の続きから読み直すはず"
+        );
+        assert!(
+            t.last_brief
+                .as_deref()
+                .is_some_and(|x| x.ends_with("brief-b.md")),
+            "出し直した brief に切り替わるはず"
+        );
+        assert_eq!(
+            (t.first_ts, t.last_brief_ts),
+            (
+                parse_time("2026-01-02T03:00:00Z"),
+                parse_time("2026-01-02T03:20:00Z")
+            ),
+            "最初の時刻と brief の時刻を持つはず"
+        );
+        fs::write(&f, &l1).unwrap();
+        let t = b.scan(&f).expect("読めるはず");
+        assert!(
+            t.last_brief
+                .as_deref()
+                .is_some_and(|x| x.ends_with("brief-a.md")),
+            "縮んだら最初から読み直すはず"
+        );
+        assert!(
+            b.scan(&d.join("missing.jsonl")).is_none(),
+            "読めなければ None のはず"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn progress_files_are_chosen_by_name_tag() {
+        assert_eq!(
+            name_tag("5-1700000000000000-progress-wA:p1-ab12.msg"),
+            Some("progress"),
+            "3 番目が tag のはず"
+        );
+        assert_eq!(
+            name_tag("5-1700000000000000-done-wA:p-1-ab12.msg"),
+            Some("done"),
+            "from に - があっても tag は 3 番目のはず"
+        );
+        assert_eq!(name_tag("x.msg"), None, "形の違う名前は tag 無しのはず");
+    }
+
+    #[test]
+    fn req3_detail_drops_reports_when_transcript_start_is_unknown() {
+        let d = tmp("req3");
+        let msg = d.join("m.msg");
+        fs::write(
+            &msg,
+            "from: wA:p1\nfrom_socket: /s/a\ntag: report\nsent_at: 2026-01-02T03:04:06Z\n\n\n前の session の報告\n",
+        )
+        .unwrap();
+        let snap = Snapshot {
+            files: vec![("m.msg".into(), msg)],
+            ..Default::default()
+        };
+        let row = PaneRow {
+            key: "k".into(),
+            pane: "wA:p1".into(),
+            tag: String::new(),
+            status: "working".into(),
+            name: String::new(),
+            title: String::new(),
+            sid: Some("sess1".into()),
+            tab_id: None,
+            ws: (String::new(), String::new()),
+            socket: "/s/a".into(),
+        };
+        let dirs = [d.clone()];
+        let reports = |body: &str| {
+            fs::write(d.join("sess1.jsonl"), body).unwrap();
+            let det = detail(
+                &snap,
+                &row,
+                &mut Transcripts::default(),
+                &mut Briefs::default(),
+                &dirs,
+            );
+            det.events.iter().filter(|e| e.kind == Kind::Report).count()
+        };
+        assert_eq!(reports(""), 0, "空の transcript には報告を帰属させないはず");
+        assert_eq!(
+            reports("not json\n"),
+            0,
+            "壊れた transcript には報告を帰属させないはず"
+        );
+        assert_eq!(
+            reports(&format!("{T}\n")),
+            1,
+            "開始時刻が分かれば開始以降の報告は帰属するはず"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn parse_msg_headers_and_body() {
+        let m = parse_msg(
+            "from: wA:p1\ntag: progress\nsent_at: 2026-01-02T03:04:05Z\n\n\n[progress] 調査\n",
+        )
+        .expect("読めるはず");
+        assert_eq!(
+            (
+                m.from_pane.as_str(),
+                m.from_socket.is_none(),
+                m.tag.as_str(),
+                m.body.as_str()
+            ),
+            ("wA:p1", true, "progress", "[progress] 調査"),
+            "ヘッダと本文の最初の行のはず"
+        );
+        assert!(
+            parse_msg("from: wA:p1\n\nx").is_none(),
+            "sent_at が無ければ捨てるはず"
+        );
+    }
+}
