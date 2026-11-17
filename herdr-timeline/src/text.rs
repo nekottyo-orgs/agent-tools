@@ -266,10 +266,15 @@ pub fn tl_body(kind: Kind, text: &str) -> String {
         t = strip_from(t);
     }
     let t = basenames(t);
-    let cut = ["。", "（", " ("]
-        .iter()
-        .filter_map(|p| t.find(p))
-        .min()
+    // 「名前: (a) …」の括弧で切ると名前だけが残るので、":" で終わる切れ目は飛ばす
+    let cut = t
+        .char_indices()
+        .filter(|&(i, c)| c == '。' || c == '（' || (c == '(' && t[..i].ends_with(' ')))
+        .map(|(i, _)| i)
+        .find(|&i| {
+            let h = t[..i].trim();
+            !h.is_empty() && !h.ends_with([':', '：'])
+        })
         .unwrap_or(t.len());
     let head = t[..cut].trim();
     clip(if head.is_empty() { &t } else { head }, BODY_MAX)
@@ -591,6 +596,14 @@ mod tests {
             tl_body(Kind::Msg, "調査役から: x"),
             "調査役から: x",
             "from は前置きを残すはず"
+        );
+        assert_eq!(
+            tl_body(
+                Kind::Report,
+                "[progress] sample-task: (a) build が通った。次は PR"
+            ),
+            "sample-task: (a) build が通った",
+            "名前の直後の括弧では切らないはず"
         );
     }
 
