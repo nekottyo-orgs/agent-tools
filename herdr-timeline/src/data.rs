@@ -921,9 +921,22 @@ mod tests {
 
     #[test]
     fn resident_labels_match_exactly() {
-        for l in RESIDENT_LABELS {
+        // 実装の定数とは別に期待値を持つ (定数と同じ一覧を回すだけだと変更に気づけない)
+        let expected = [
+            "watch-my-pr-reviews",
+            "watch-other-pr-reviews",
+            "watch-worker",
+            "review-submit",
+            "Cue回答の監視",
+        ];
+        for l in expected {
             assert!(is_resident(l), "{l} は常駐のはず");
         }
+        assert_eq!(
+            RESIDENT_LABELS.len(),
+            expected.len(),
+            "RESIDENT_LABELS と試験の一覧の数が違う。一覧を変えたら試験も更新する"
+        );
         for l in [
             "impl-task",
             "watch-worker2",

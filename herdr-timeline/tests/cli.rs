@@ -468,6 +468,49 @@ fn dispatched_pane_hidden_when_msg_from_other_socket() {
 }
 
 #[test]
+fn hidden_orchestrator_pane_keeps_its_name_in_run_row() {
+    let fx = Fx::new("hidden-orch-name");
+    let rd = |p: &str| {
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(fx.path(p)).unwrap())
+            .unwrap()
+    };
+    let (mut panes, mut tabs) = (rd("herdr/panes.json"), rd("herdr/tabs.json"));
+    // 窓口 (wA:p5) は常駐 label で一覧から隠れるが、窓口行の名前には残るはず
+    panes["result"]["panes"].as_array_mut().unwrap().push(pane(
+        "wA:p5",
+        "working",
+        SID2,
+        "tA:9",
+        "wA",
+        "watch-worker",
+    ));
+    tabs["result"]["tabs"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"tab_id": "tA:9", "label": "窓口役", "pane_count": 1}));
+    fx.write("herdr/panes.json", &panes.to_string());
+    fx.write("herdr/tabs.json", &tabs.to_string());
+    fx.write("runs/r1/run.md", "# run\norchestrator_pane: wA:p5\n");
+    fx.msg(
+        "runs/r1/inbox/new/1.msg",
+        "wA:p2",
+        Some(&fx.sock()),
+        "done",
+        "2026-01-02T03:10:00Z",
+        "報告",
+    );
+    let a = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        !a.contains("watch-worker の title"),
+        "常駐の窓口 pane は一覧から隠れるはず: {a}"
+    );
+    assert!(
+        a.contains("▲ 窓口 作業場 / 窓口役"),
+        "隠した窓口 pane も名前で出るはず (pane id だけにならない): {a}"
+    );
+}
+
+#[test]
 fn dispatched_pane_shown_when_runs_dir_missing() {
     let fx = dispatched_fx("dispatched-nodir");
     std::fs::remove_dir_all(fx.path("runs")).unwrap();
