@@ -45,7 +45,7 @@ fn pane_json(
     });
     let owner = match &p.kind {
         Some(PaneKind::Resident) => Some(label.clone()).filter(|l| l.starts_with("watch-")),
-        Some(PaneKind::Dispatch(r)) => Some(r.clone()),
+        Some(PaneKind::Dispatch(r)) => Some(clean(r)),
         None => None,
     };
     json!({

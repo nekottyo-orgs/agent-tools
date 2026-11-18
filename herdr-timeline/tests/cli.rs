@@ -1041,3 +1041,72 @@ fn json_inbox_counts_attributed_msgs_only() {
         "working 以外は null のはず"
     );
 }
+
+#[test]
+fn json_server_and_key_follow_session_count() {
+    // 1 session: server は null、key は pane_id
+    let one = Fx::new("json-one");
+    let v = json_of(&one.run(&["--json"]));
+    let p = jpane(&v, "wA:p1");
+    assert_eq!(
+        (&p["server"], &p["key"]),
+        (&json!(null), &json!("wA:p1")),
+        "1 session なら server は null のはず"
+    );
+    // 2 session: server は session 名、key は <server>/<pane_id>
+    let two = Fx::new("json-two");
+    two.write("herdr/herdr.sock", "");
+    two.write("herdr/sessions/beta/herdr.sock", "");
+    let v = json_of(&two.run(&["--json"]));
+    let beta = v["panes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["server"] == "beta" && p["pane_id"] == "wA:p1")
+        .unwrap_or_else(|| panic!("beta の wA:p1 が無い: {v}"));
+    assert_eq!(
+        beta["key"],
+        json!("beta/wA:p1"),
+        "key は server/pane_id のはず"
+    );
+    assert!(
+        v["panes"].as_array().unwrap().iter().all(|p| {
+            let s = p["server"]
+                .as_str()
+                .unwrap_or_else(|| panic!("server が null: {p}"));
+            p["key"] == json!(format!("{s}/{}", p["pane_id"].as_str().unwrap()))
+        }),
+        "全 pane が server/pane_id の key を持つはず: {v}"
+    );
+}
+
+#[test]
+fn json_strips_escape_from_label_and_owner() {
+    let fx = Fx::new("json-esc");
+    let mut panes: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fx.path("herdr/panes.json")).unwrap()).unwrap();
+    panes["result"]["panes"].as_array_mut().unwrap().push(pane(
+        "wA:p5",
+        "working",
+        SID2,
+        "tA:2",
+        "wA",
+        "\u{1b}[31mrepo-123",
+    ));
+    fx.write("herdr/panes.json", &panes.to_string());
+    let v = json_of(&fx.run(&["--json"]));
+    let p = jpane(&v, "wA:p5");
+    assert_eq!(
+        p["owner"].as_str().map(|o| o.contains('\u{1b}')),
+        Some(false),
+        "owner に ESC が無いはず: {p}"
+    );
+    assert!(
+        !p["label"].as_str().unwrap().contains('\u{1b}'),
+        "label に ESC が無いはず: {p}"
+    );
+    assert!(
+        !stdout(&fx.run(&["--json"])).contains('\u{1b}'),
+        "出力全体に ESC が無いはず"
+    );
+}

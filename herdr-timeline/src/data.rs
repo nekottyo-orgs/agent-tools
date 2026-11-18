@@ -178,7 +178,7 @@ pub struct PaneRow {
     pub status: String,
     pub name: String,
     pub title: String,
-    /// herdr の生の label
+    /// herdr の生の label。出力側で clean する
     pub label: String,
     pub kind: Option<PaneKind>,
     pub sid: Option<String>,

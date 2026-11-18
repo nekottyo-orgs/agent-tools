@@ -11,7 +11,7 @@
 //   - 外部入力 (transcript・inbox・label・title) は端末に出す前に制御文字を落とす (text::clean)
 //   - 外部コマンドやファイルの失敗では落とさず、警告 1 行か空にする
 //
-// 終了コード: 0 正常 (-h、--once・--timeline の描画、対話の終了)、1 --timeline の pane が無い、2 引数の誤り (--json と --timeline の併用を含む)
+// 終了コード: 0 正常 (-h、--once・--json・--timeline の描画、対話の終了)、1 --timeline の pane が無い、2 引数の誤り (--json と --timeline の併用を含む)
 
 mod core;
 mod data;
@@ -74,7 +74,7 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
   NO_COLOR / FORCE_COLOR    色を消す / tty でなくても色を付ける
 
 終了コード:
-  0  正常 (-h、--once・--timeline の描画、対話の終了)
+  0  正常 (-h、--once・--json・--timeline の描画、対話の終了)
   1  --timeline の pane が見つからない
   2  引数の誤り (--json と --timeline の併用、--interval が 86400、--width が 1000 を超える場合を含む)
 ";
