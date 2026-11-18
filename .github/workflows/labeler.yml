@@ -8,6 +8,11 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+# 同じ PR の run は直列にする (古い run が新しい run の外した label を付け直さないように)
+concurrency:
+  group: labeler-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   pull-requests: write
@@ -23,10 +28,18 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           # files API は path を quote せず返し、rename の元 path (previous_filename) も持つ。diff 全文を取らないので巨大な PR でも失敗しない
-          files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files" --jq '.[] | .filename, (.previous_filename // empty)')
+          # 1 record を JSON の 1 行にして、改行を含む path でも行が割れないようにする
+          files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files" --jq '.[] | [.filename, .previous_filename] | @json')
+          # files API は 3,000 件で打ち切る。欠けた一覧で label を外さないよう、件数が合わなければ何も変えずに失敗する
+          total=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .changed_files)
+          got=$(wc -l <<<"$files")
+          if [ "$got" -lt "$total" ]; then
+            echo "files API returned $got of $total files; leaving labels as they are" >&2
+            exit 1
+          fi
           for tool in bash-gates secret-scan herdr-timeline; do
             # 触らなくなった tool の label は外す (変更を戻した PR が notes に残らないようにする)
-            if grep -q "^$tool/" <<<"$files"; then
+            if grep -Eq "^\[\"$tool/|,\"$tool/" <<<"$files"; then
               gh pr edit "$PR_NUMBER" --add-label "$tool"
             else
               gh pr edit "$PR_NUMBER" --remove-label "$tool"
