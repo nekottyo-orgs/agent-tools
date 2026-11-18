@@ -1,0 +1,14 @@
+# herdr-timeline の release 設定。tool ごとに tagpr の設定を分ける (config: herdr-timeline/.tagpr)。
+# tag は `herdr-timeline/v<version>` になる (tagPrefix は / 区切りになる仕様)。
+# パスは tagpr の作業 dir (repo root) 起点で書く。
+[tagpr]
+    releaseBranch = main
+    tagPrefix = herdr-timeline
+    vPrefix = true
+    versionFile = herdr-timeline/Cargo.toml
+    # release PR の CI は --locked で build するので、version を上げたら Cargo.lock も追従させる。lock は workspace の root にある
+    postVersionCommand = cargo update --workspace --manifest-path herdr-timeline/Cargo.toml
+    changelogFile = herdr-timeline/CHANGELOG.md
+    releaseYAMLPath = herdr-timeline/.github/release.yml
+    # immutable releases は公開後に asset を足せない。draft で作らせ、release.yml が asset を載せてから公開する
+    release = draft
