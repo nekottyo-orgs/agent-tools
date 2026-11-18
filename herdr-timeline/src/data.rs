@@ -625,16 +625,16 @@ fn instr_brief(l: &Line) -> Option<(i64, Option<String>)> {
 
 /// 新しい turn の始まり。tool result (content が配列) と compact の要約・meta・sidechain・skip 対象は数えない。
 /// auto-handover の「続けて」は通常の入力として届くので数える (実 transcript で確認)。
-/// スラッシュコマンド (content が <command-name> / <command-message> で始まる) は人が始めた turn だが
-/// classify は Skip にするので別に数える。task-notification と Stop hook の再開は起点かどうか決まらないので数えない
+/// skill 起動などのスラッシュコマンド (content が <command-message> で始まる) は人が始めた turn だが
+/// classify は Skip にするので別に数える。モデルに送られないローカルコマンド (/compact など、<command-name> で始まる) と
+/// task-notification と Stop hook の再開は起点にしない
 fn is_turn(l: &Line) -> bool {
     if l.typ != "user" || core::excluded(l) {
         return false;
     }
     l.content.as_deref().is_some_and(|c| {
         let t = core::trim_left(c);
-        t.starts_with("<command-name>")
-            || t.starts_with("<command-message>")
+        t.starts_with("<command-message>")
             || matches!(
                 core::classify(c),
                 Class::Instr | Class::Paste | Class::HerdrMsg
@@ -1088,6 +1088,23 @@ mod tests {
             b.scan(&f).unwrap().last_turn_ts,
             t1,
             "task-notification は turn の起点にならないはず"
+        );
+        // モデルに送られないローカルコマンドは起点にしない
+        let l = user(
+            "2026-01-02T03:50:00Z",
+            r#""<command-name>/compact</command-name>\n            <command-message>compact</command-message>""#,
+            "",
+        );
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&f)
+            .unwrap()
+            .write_all(l.as_bytes())
+            .unwrap();
+        assert_eq!(
+            b.scan(&f).unwrap().last_turn_ts,
+            t1,
+            "ローカルコマンドは turn の起点にならないはず"
         );
         let _ = fs::remove_dir_all(&d);
     }
