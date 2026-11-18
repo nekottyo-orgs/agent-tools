@@ -138,10 +138,11 @@ pub enum Split {
 /// 端末の列数 (phys) で並べる / 積むを決め、各幅は描画幅 width (列数 - 1) から取る。
 /// 積むときの高さは一覧 6 : Timeline 4 で、どちらも 3 行は確保する
 pub fn split(phys: usize, width: usize, height: usize) -> Split {
-    if phys >= SIDE_MIN_WIDTH {
+    // phys と width は別々に読まれて食い違うことがあるので、幅が足りなければ積む
+    if phys >= SIDE_MIN_WIDTH && width >= LIST_W + width_of(SEP) {
         return Split::Side {
             list_w: LIST_W,
-            tl_w: width - LIST_W - width_of(SEP),
+            tl_w: width.saturating_sub(LIST_W + width_of(SEP)),
         };
     }
     let tl_h = (height * 4 / 10).max(3).min(height.saturating_sub(1));
@@ -583,6 +584,14 @@ mod tests {
                 tl_w: 119 - LIST_W - 3
             },
             "120 は並べ、区切りの 3 桁を引くはず"
+        );
+    }
+
+    #[test]
+    fn split_stacks_when_width_is_too_narrow() {
+        assert!(
+            matches!(split(120, 59, 30), Split::Stack { .. }),
+            "phys と width が食い違っても panic せず積むはず"
         );
     }
 

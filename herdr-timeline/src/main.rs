@@ -167,9 +167,12 @@ fn term_size() -> (usize, usize) {
 
 /// 最終桁への描画は端末の自動折り返しで行が崩れることがあるので、指定が無いときは 1 桁狭く描く
 fn term_width(fixed: Option<usize>) -> usize {
-    fixed
-        .unwrap_or_else(|| term_size().0.saturating_sub(1))
-        .max(30)
+    width_for(fixed, term_size().0)
+}
+
+/// 列数 cols から描画幅を導く。描画では 1 回読んだ列数を渡し、読みの間の変化で幅が食い違わないようにする
+fn width_for(fixed: Option<usize>, cols: usize) -> usize {
+    fixed.unwrap_or_else(|| cols.saturating_sub(1)).max(30)
 }
 
 /// 経過の起点。herdr は状態の開始時刻を返さないので、blocked は transcript の最終書き込み
@@ -446,10 +449,11 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
             }
             if redraw {
                 // 幅も高さも描画のたびに取り直す。pane の大きさを変えたら次の描画から追従する
-                let height = term_size().1.saturating_sub(1).max(2);
-                let width = term_width(o.width);
+                let (cols, rows_n) = term_size();
+                let height = rows_n.saturating_sub(1).max(2);
+                let width = width_for(o.width, cols);
                 let body_h = height - usize::from(tty);
-                let phys = o.width.unwrap_or_else(|| term_size().0);
+                let phys = o.width.unwrap_or(cols);
                 let sp = split(phys, width, body_h);
                 let (list_w, list_h) = list_dims(tty, &sp, width, body_h);
                 let v = View {
