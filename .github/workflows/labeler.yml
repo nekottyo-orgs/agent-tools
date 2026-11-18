@@ -1,11 +1,11 @@
 # PR が触った path から tool の label を付ける。release notes は label で tool ごとに絞る (各 tool の .github/release.yml)。
 # 外部 action は使わず、runner に入っている gh だけで付ける。
-# pull_request_target は PR の code を checkout しない。fork の PR でも label を付けるために使う。
+# この repo は fork の PR を受け付けないので pull_request で足りる (同じ repo の PR なら書き込み権限の token が使える)。PR の code は checkout しない。
 # path は gh の出力を比較に使うだけで、shell には渡さない。label が付く前に release PR が merge されると、その PR は notes に載らない (限界)。
 name: labeler
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened]
 
 permissions:
