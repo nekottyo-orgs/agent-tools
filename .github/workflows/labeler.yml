@@ -1,7 +1,7 @@
 # PR が触った path から tool の label を付ける。release notes は label で tool ごとに絞る (各 tool の .github/release.yml)。
 # 外部 action は使わず、runner に入っている gh だけで付ける。
 # pull_request_target は PR の code を checkout しない。fork の PR でも label を付けるために使う。
-# path は gh の出力を比較に使うだけで、shell には渡さない。
+# path は gh の出力を比較に使うだけで、shell には渡さない。label が付く前に release PR が merge されると、その PR は notes に載らない (限界)。
 name: labeler
 
 on:
@@ -22,9 +22,13 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          files=$(gh pr diff "$PR_NUMBER" --name-only)
+          # files API は path を quote せず返し、rename の元 path (previous_filename) も持つ。diff 全文を取らないので巨大な PR でも失敗しない
+          files=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files" --jq '.[] | .filename, (.previous_filename // empty)')
           for tool in bash-gates secret-scan herdr-timeline; do
+            # 触らなくなった tool の label は外す (変更を戻した PR が notes に残らないようにする)
             if grep -q "^$tool/" <<<"$files"; then
               gh pr edit "$PR_NUMBER" --add-label "$tool"
+            else
+              gh pr edit "$PR_NUMBER" --remove-label "$tool"
             fi
           done
