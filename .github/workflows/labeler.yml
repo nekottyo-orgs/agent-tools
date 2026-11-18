@@ -1,0 +1,20 @@
+# PR が触った tool の path から label を付ける (設定は .github/labeler.yml)。
+# release notes はこの label で tool ごとに絞る。
+# pull_request_target は PR の code を checkout しない。設定は base 側のものを読むので、fork の PR でも label が付く。
+name: labeler
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v7.0.0
+        with:
+          sync-labels: true

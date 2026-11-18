@@ -1,0 +1,10 @@
+# PR が触った path から tool の label を付ける。release notes は label で tool ごとに絞る (各 tool の .github/release.yml)。
+bash-gates:
+  - changed-files:
+      - any-glob-to-any-file: 'bash-gates/**'
+secret-scan:
+  - changed-files:
+      - any-glob-to-any-file: 'secret-scan/**'
+herdr-timeline:
+  - changed-files:
+      - any-glob-to-any-file: 'herdr-timeline/**'
