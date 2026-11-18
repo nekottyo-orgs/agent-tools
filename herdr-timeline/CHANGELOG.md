@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.1.1](https://github.com/nekottyo/agent-tools/compare/herdr-timeline/v0.1.0...herdr-timeline/v0.1.1) - 2026-11-18
+
+### Changes
+- ci: PR に tool の label を付け、release notes を label で絞る by @nekottyo in https://github.com/nekottyo/agent-tools/pull/35
+
 ## [v0.1.0](https://github.com/nekottyo/agent-tools/commits/herdr-timeline/v0.1.0) - 2026-11-18
 
 ### Changes
