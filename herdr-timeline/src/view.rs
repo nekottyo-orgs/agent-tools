@@ -64,6 +64,7 @@ fn symbol(status: &str) -> &'static str {
     }
 }
 
+// blocked の行は行全体を赤太字で塗る (whole) ので記号にはこの色を使わない。ここに残すのは status と色の対応を 1 か所に揃えるため
 // herdr 本体の status_color (同ファイル) と同じ対応。palette の yellow / red / teal / green / overlay0 を ANSI の 33 / 31 / 36 / 32 / dim に当てる
 fn status_style(status: &str) -> &'static str {
     match status {
@@ -159,10 +160,24 @@ fn tint_tally(rows: &[&Row], part: &str, color: bool) -> String {
             let n = rows.iter().filter(|x| x.status == k).count();
             if n > 0 {
                 let icon = paint(true, symbol(k), status_style(k));
-                s = s.replace(
-                    &format!("{} {n}", symbol(k)),
-                    &format!("\x1b[0m{icon}\x1b[2m {n}"),
-                );
+                // tally は行の末尾にあるので、後ろの一致を選ぶ。名前に同じ文字列があっても塗らない。件数の桁の前方一致も除く
+                // 行末は paint が足した制御文字 (\x1b) が続くので、それも境界に数える
+                let pat = format!("{} {n}", symbol(k));
+                let at = s
+                    .match_indices(&pat)
+                    .map(|(i, _)| i)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .find(|&i| {
+                        s[i + pat.len()..]
+                            .chars()
+                            .next()
+                            .is_none_or(|c| c.is_whitespace() || c == '\x1b')
+                    });
+                if let Some(i) = at {
+                    s.replace_range(i..i + pat.len(), &format!("\x1b[0m{icon}\x1b[2m {n}"));
+                }
             }
         }
     }
@@ -647,6 +662,82 @@ mod tests {
         assert!(
             !tint_tally(&refs, "ws  ✓ 1", false).contains('\x1b'),
             "色なしなら制御文字を出さないはず"
+        );
+    }
+
+    #[test]
+    fn tint_tally_skips_same_text_in_workspace_name() {
+        let rows = [
+            row("a", "done", "p1", None),
+            row("b", "unknown", "p2", None),
+        ];
+        let refs: Vec<&Row> = rows.iter().collect();
+        let t = tint_tally(&refs, "ws ✓ 1 · 10  ✓ 1  · 1", true);
+        assert!(
+            t.starts_with("\x1b[2mws ✓ 1 · 10  "),
+            "名前側は塗らないはず: {t:?}"
+        );
+        assert!(
+            t.contains("\x1b[36m✓\x1b[0m"),
+            "末尾の tally は塗るはず: {t:?}"
+        );
+        assert_eq!(
+            t.matches("\x1b[36m").count(),
+            1,
+            "塗るのは 1 か所のはず: {t:?}"
+        );
+    }
+
+    #[test]
+    fn blocked_row_keeps_whole_line_red_and_widths_hold_with_color() {
+        let rows = [
+            row("a", "blocked", "p1", Some("t1")),
+            row("b", "done", "p2", Some("t2")),
+            row("c", "idle", "p3", Some("t3")),
+        ];
+        let (names, ws) = (HashMap::new(), HashMap::new());
+        let v = View {
+            rows: &rows,
+            runs: &[],
+            warn: &[],
+            names: &names,
+            ws_names: &ws,
+            width: 40,
+            color: true,
+            select: None,
+            height: None,
+            now: 10,
+            expanded: None,
+            off: &|_| 0,
+        };
+        let lines = layout(&v).0;
+        let blocked = lines.iter().find(|l| l.contains('×')).expect("blocked 行");
+        assert!(
+            blocked.matches("\x1b[0m").count() == 1 && blocked.ends_with("\x1b[0m"),
+            "行全体を 1 回で塗り、途中で色を切らないはず: {blocked:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("\x1b[36m✓\x1b[0m") && l.contains("\x1b[32m○\x1b[0m")),
+            "畳んだ行は色ありで記号が塗られるはず: {lines:?}"
+        );
+        let strip = |s: &str| {
+            let mut o = String::new();
+            let mut esc = false;
+            for c in s.chars() {
+                match (esc, c) {
+                    (_, '\x1b') => esc = true,
+                    (true, 'm') => esc = false,
+                    (false, c) => o.push(c),
+                    _ => {}
+                }
+            }
+            o
+        };
+        assert!(
+            lines.iter().all(|l| width_of(&strip(l)) <= 40),
+            "色を除いた幅が width 以下のはず: {lines:?}"
         );
     }
 

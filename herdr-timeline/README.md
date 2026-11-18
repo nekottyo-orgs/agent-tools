@@ -5,7 +5,7 @@ herdr (端末の multiplexer) の pane を「要対応 / 作業中 / done・idle
 - 要対応: blocked の pane と、inbox/new に未処理の報告がある run
 - 作業中: working の pane。brief のゴールと step の進捗を要約に出す
 - done / idle: workspace ごとに畳んで件数だけ出す
-- 状態の記号と色は herdr 本体の `status_indicators = "symbols"` と同じ (blocked は赤の `×`、working は黄の `◐`、done は青緑の `✓`、idle は緑の `○`、unknown は `·`)。色が出ない端末でも記号の形で区別できる
+- 状態の記号と色は herdr 本体の `status_indicators = "symbols"` と同じ (blocked は赤の `×`、working は黄の `◐`、done は青緑の `✓`、idle は緑の `○`、unknown は `·`)。色が出ない端末でも記号の形で区別できる。run の未処理の報告の行頭にある `▲` は pane の状態ではなく別の印なので、そのまま残している
 
 ## 読み取り範囲と安全設計
 
