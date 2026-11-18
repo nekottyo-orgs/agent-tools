@@ -11,10 +11,10 @@ use crate::text::{
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 // herdr の pane の API には常駐の印が無い (run-inbox の --resident は起動時の env を渡すだけで pane list に出ない)。
@@ -372,21 +372,21 @@ fn hide_dispatched(snap: &mut Snapshot, labels: &HashMap<String, String>) {
     if snap.runs.is_empty() || !snap.panes.iter().any(candidate) {
         return;
     }
-    let msgs = read_msgs(&snap.files, false);
+    // 本文は要らないので、ヘッダの (from, from_socket) だけを cache 越しに引く
+    let origins: std::collections::HashSet<(String, String)> = snap
+        .files
+        .iter()
+        .filter_map(|(_, p)| msg_origin(p))
+        .collect();
     let in_ledger = |r: &PaneRow| {
-        // i64::MIN で since を無効にするので、同じ pane id と socket の古い msg が残っていても
+        // since は見ず pane id と socket の一致だけで判定するので、古い msg が残っていても
         // 台帳に属すとみなして外さない (安全側)
-        let p = core::Pane {
-            pane: r.pane.clone(),
-            socket: r.socket.clone(),
-            since: Some(i64::MIN),
-        };
         snap.runs.iter().any(|x| {
             x.orch == r.pane
                 && x.orch_socket
                     .as_deref()
                     .is_none_or(|s| canon(s) == canon(&r.socket))
-        }) || msgs.iter().any(|m| attributed(&p, &m.msg))
+        }) || origins.contains(&(r.pane.clone(), r.socket.clone()))
     };
     let drop: Vec<String> = snap
         .panes
@@ -395,6 +395,42 @@ fn hide_dispatched(snap: &mut Snapshot, labels: &HashMap<String, String>) {
         .map(|r| r.key.clone())
         .collect();
     snap.panes.retain(|r| !drop.contains(&r.key));
+}
+
+type OriginCache = HashMap<PathBuf, (SystemTime, u64, Option<(String, String)>)>;
+
+/// msg ヘッダの (from, from_socket) を (path, mtime, size) で cache して返す。変わらない msg は開き直さない。
+/// from_socket の無い旧形式は帰属しないので None
+fn msg_origin(path: &Path) -> Option<(String, String)> {
+    static CACHE: OnceLock<Mutex<OriginCache>> = OnceLock::new();
+    let meta = fs::metadata(path).ok()?;
+    let key = (meta.modified().ok()?, meta.len());
+    let mut c = CACHE.get_or_init(Default::default).lock().ok()?;
+    if let Some((t, n, v)) = c.get(path) {
+        if (*t, *n) == key {
+            return v.clone();
+        }
+    }
+    let v = read_msg_origin(path);
+    c.insert(path.to_path_buf(), (key.0, key.1, v.clone()));
+    v
+}
+
+/// 最初の空行までのヘッダだけを読む
+fn read_msg_origin(path: &Path) -> Option<(String, String)> {
+    let (mut from, mut sock) = (None, None);
+    for l in BufReader::new(fs::File::open(path).ok()?).lines() {
+        let l = l.ok()?;
+        if l.is_empty() {
+            break;
+        }
+        match l.split_once(':') {
+            Some(("from", v)) => from = Some(v.trim().to_string()),
+            Some(("from_socket", v)) if !v.trim().is_empty() => sock = Some(canon(v.trim())),
+            _ => {}
+        }
+    }
+    Some((from?, sock?))
 }
 
 fn mtime(p: &Path) -> Option<i64> {
@@ -849,6 +885,29 @@ mod tests {
         fs::write(&f, format!("{T}\n{T}\n")).unwrap();
         assert_eq!(c.get(&f).events.len(), 2, "書き換えた内容を読むはず");
         assert_eq!(c.parses, 2, "書き換えたら解析し直すはず");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn msg_origin_cache_follows_file_change() {
+        let d = tmp("origin");
+        let f = d.join("a.msg");
+        fs::write(&f, "from: w:p1\nfrom_socket: /s/a\n\n本文\n").unwrap();
+        let a = msg_origin(&f);
+        assert_eq!(
+            a.as_ref().map(|x| x.0.as_str()),
+            Some("w:p1"),
+            "from を読むはず"
+        );
+        assert_eq!(msg_origin(&f), a, "変わらなければ同じ値のはず");
+        fs::write(&f, "from: w:p2\nfrom_socket: /s/a\n\n本文 長くした\n").unwrap();
+        assert_eq!(
+            msg_origin(&f).map(|x| x.0),
+            Some("w:p2".to_string()),
+            "size が変われば新しい値のはず"
+        );
+        fs::write(&f, "from: w:p2\n\n本文\n").unwrap();
+        assert_eq!(msg_origin(&f), None, "旧形式は帰属しないはず");
         let _ = fs::remove_dir_all(&d);
     }
 
