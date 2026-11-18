@@ -189,7 +189,8 @@ pub fn timeline_panel(
     out
 }
 
-/// 行数が h を超えるなら末尾を 1 行の省略表示に替える。欠けていることが見えるようにするため
+/// 行数が h を超えるなら末尾を 1 行の省略表示に替える。欠けていることが見えるようにするため。
+/// 数えるのは表示行で event 件数ではない (まとめた行と timeline_lines の「他 N 件」行を含む)
 fn fit_rows(mut rows: Vec<String>, h: usize) -> Vec<String> {
     if rows.len() <= h {
         return rows;
@@ -199,7 +200,7 @@ fn fit_rows(mut rows: Vec<String>, h: usize) -> Vec<String> {
     }
     let hidden = rows.len() - (h - 1);
     rows.truncate(h - 1);
-    rows.push(format!("他 {hidden} 件"));
+    rows.push(format!("他 {hidden} 行"));
     rows
 }
 
@@ -574,7 +575,7 @@ mod tests {
         let rows: Vec<String> = (0..9).map(|i| format!("e{i}")).collect();
         let out = fit_rows(rows.clone(), 4);
         assert_eq!(out.len(), 4, "高さを超えないはず");
-        assert_eq!(out[3], "他 6 件", "欠けた行数が見えるはず");
+        assert_eq!(out[3], "他 6 行", "欠けた行数が見えるはず");
         assert_eq!(fit_rows(rows.clone(), 9), rows, "収まるなら変えないはず");
     }
 
