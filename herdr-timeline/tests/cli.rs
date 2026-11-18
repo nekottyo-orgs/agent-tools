@@ -99,7 +99,16 @@ impl Fx {
 
     /// 止まらないことも確かめるため、10 秒で打ち切る
     fn run(&self, args: &[&str]) -> Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_herdr-timeline"))
+        self.run_with(args, true)
+    }
+
+    /// runs が false なら HERDR_TIMELINE_RUNS_DIR を渡さない (runs-dir 未指定)
+    fn run_with(&self, args: &[&str], runs: bool) -> Output {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_herdr-timeline"));
+        if !runs {
+            cmd.env_remove("HERDR_TIMELINE_RUNS_DIR");
+        }
+        let mut child = cmd
             .args(args)
             .env(
                 "HERDR_TIMELINE_HERDR",
@@ -108,7 +117,7 @@ impl Fx {
             .env("HERDR_TIMELINE_HERDR_DIR", self.path("herdr"))
             .env("HERDR_SOCKET_PATH", self.sock())
             .env("HERDR_TIMELINE_PROJECTS", self.path("projects"))
-            .env("HERDR_TIMELINE_RUNS_DIR", self.path("runs"))
+            .envs(runs.then(|| ("HERDR_TIMELINE_RUNS_DIR", self.path("runs"))))
             .env("NO_COLOR", "1")
             .env_remove("FORCE_COLOR")
             .stdin(Stdio::null())
@@ -334,6 +343,138 @@ fn resident_panes_hidden_unless_show_resident() {
     assert!(
         shown.contains("watch-worker の title") && shown.contains("impl-task の title"),
         "--show-resident では常駐も出るはず: {shown}"
+    );
+}
+
+#[test]
+fn dispatched_panes_hidden_unless_in_ledger_or_blocked() {
+    let fx = Fx::new("dispatched");
+    let mut panes: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fx.path("herdr/panes.json")).unwrap())
+            .unwrap();
+    let list = panes["result"]["panes"].as_array_mut().unwrap();
+    list.push(pane("wA:p5", "working", SID2, "tA:2", "wA", "repo-123"));
+    list.push(pane(
+        "wA:p6",
+        "working",
+        SID2,
+        "tA:2",
+        "wA",
+        "repo-bundle-45",
+    ));
+    list.push(pane("wA:p7", "blocked", SID2, "tA:2", "wA", "repo-67"));
+    list.push(pane("wA:p9", "working", SID2, "tA:2", "wA", "impl-task"));
+    fx.write("herdr/panes.json", &panes.to_string());
+    fx.msg(
+        "runs/r1/inbox/new/1.msg",
+        "wA:p6",
+        Some(&fx.sock()),
+        "done",
+        "2026-01-02T03:10:00Z",
+        "報告",
+    );
+    let a = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        !a.contains("repo-123 の title"),
+        "run に属さない dispatch の pane は出ないはず: {a}"
+    );
+    assert!(
+        a.contains("repo-bundle-45 の title"),
+        "inbox に msg がある pane は同じ label でも出るはず: {a}"
+    );
+    assert!(a.contains("repo-67 の title"), "blocked は出るはず: {a}");
+    assert!(a.contains("impl-task の title"), "{a}");
+    let shown = stdout(&fx.run(&["--once", "--width", "100", "--show-resident"]));
+    assert!(
+        shown.contains("repo-123 の title"),
+        "--show-resident では出るはず: {shown}"
+    );
+    let none = stdout(&fx.run_with(&["--once", "--width", "100"], false));
+    assert!(
+        none.contains("repo-123 の title"),
+        "runs-dir 無しなら台帳が読めないので外さないはず: {none}"
+    );
+}
+
+fn dispatched_fx(name: &str) -> Fx {
+    let fx = Fx::new(name);
+    let mut panes: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fx.path("herdr/panes.json")).unwrap())
+            .unwrap();
+    let list = panes["result"]["panes"].as_array_mut().unwrap();
+    list.push(pane("wA:p5", "working", SID2, "tA:2", "wA", "repo-123"));
+    fx.write("herdr/panes.json", &panes.to_string());
+    fx
+}
+
+#[test]
+fn dispatched_pane_shown_when_orchestrator_pane() {
+    let fx = dispatched_fx("dispatched-orch");
+    fx.write("runs/r1/run.md", "# run\norchestrator_pane: wA:p5\n");
+    let a = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        a.contains("repo-123 の title"),
+        "窓口の pane は dispatch の形でも出るはず: {a}"
+    );
+}
+
+#[test]
+fn dispatched_pane_shown_when_orchestrator_socket_matches() {
+    let fx = dispatched_fx("dispatched-orch-sock");
+    fx.write(
+        "runs/r1/run.md",
+        &format!(
+            "# run\norchestrator_pane: wA:p5\norchestrator_socket: {}\n",
+            fx.sock()
+        ),
+    );
+    let a = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        a.contains("repo-123 の title"),
+        "orchestrator_socket が一致する窓口は出るはず: {a}"
+    );
+}
+
+#[test]
+fn dispatched_pane_hidden_when_orchestrator_socket_differs() {
+    let fx = dispatched_fx("dispatched-orch-other");
+    fx.write(
+        "runs/r1/run.md",
+        "# run\norchestrator_pane: wA:p5\norchestrator_socket: /other/herdr.sock\n",
+    );
+    let a = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        !a.contains("repo-123 の title"),
+        "別 socket の窓口は pane id が同じでも外れるはず: {a}"
+    );
+}
+
+#[test]
+fn dispatched_pane_hidden_when_msg_from_other_socket() {
+    let fx = dispatched_fx("dispatched-sock");
+    fx.msg(
+        "runs/r1/inbox/new/1.msg",
+        "wA:p5",
+        Some("/other/herdr.sock"),
+        "done",
+        "2026-01-02T03:10:00Z",
+        "報告",
+    );
+    let a = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        !a.contains("repo-123 の title"),
+        "別 socket の msg は帰属しないので外れるはず: {a}"
+    );
+}
+
+#[test]
+fn dispatched_pane_shown_when_runs_dir_missing() {
+    let fx = dispatched_fx("dispatched-nodir");
+    std::fs::remove_dir_all(fx.path("runs")).unwrap();
+    let a = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        a.contains("repo-123 の title"),
+        "存在しない runs-dir なら台帳が読めないので外さないはず: {a}"
     );
 }
 

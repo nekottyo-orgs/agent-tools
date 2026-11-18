@@ -11,10 +11,10 @@ use crate::text::{
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 // herdr の pane の API には常駐の印が無い (run-inbox の --resident は起動時の env を渡すだけで pane list に出ない)。
@@ -29,6 +29,16 @@ pub const RESIDENT_LABELS: &[&str] = &[
 
 pub fn is_resident(label: &str) -> bool {
     RESIDENT_LABELS.contains(&label)
+}
+
+/// 監視 skill の dispatch が起こす PR review の pane の label (`<repo略称>-<PR番号>` / `<repo略称>-bundle-<PR番号>`)。
+/// 形だけだと `feat-xxx-34` のような無関係な pane に当たり、run の台帳だけだと窓口や常駐が「run に属さない pane」として消える。
+/// そのため呼び出し側で label の形と「run に属さない」の両方を満たすものだけを外す。
+pub fn is_dispatched_label(label: &str) -> bool {
+    let Some((head, num)) = label.rsplit_once('-') else {
+        return false;
+    };
+    !head.is_empty() && !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit())
 }
 
 pub struct Env {
@@ -159,6 +169,8 @@ pub struct PaneRow {
 
 pub struct Run {
     pub orch: String,
+    /// orchestrator_socket。無い旧形式の run は None (pane id だけで照合する)
+    pub orch_socket: Option<String>,
     pub new: usize,
     pub oldest: Option<i64>,
 }
@@ -205,6 +217,7 @@ pub fn gather(env: &Env) -> Snapshot {
     let mut snap = Snapshot::default();
     let own = canon(&env.own_sock.to_string_lossy());
     let mut dup = Vec::new();
+    let mut pane_labels: HashMap<String, String> = HashMap::new();
     for (name, sock) in sessions(env) {
         let socket = sock
             .as_ref()
@@ -313,6 +326,7 @@ pub fn gather(env: &Env) -> Snapshot {
             {
                 continue; // 名前の引き当て (snap.names) は上で済ませてあるので残る
             }
+            pane_labels.insert(tag.clone(), s(p, "label"));
             snap.panes.push(PaneRow {
                 key: tag.clone(),
                 tag,
@@ -339,8 +353,84 @@ pub fn gather(env: &Env) -> Snapshot {
         .sort_by(|a, b| a.pane.cmp(&b.pane).then(a.key.cmp(&b.key)));
     if let Some(runs) = &env.runs {
         read_runs(runs, &mut snap);
+        if !env.show_resident {
+            hide_dispatched(&mut snap, &pane_labels);
+        }
     }
     snap
+}
+
+/// dispatch の pane (label の形が合い、run の台帳に属さず、blocked でない) を一覧から外す。
+/// 台帳に属すとは、run の inbox の msg が pane id と socket で帰属するか、run.md の orchestrator_pane であること。
+/// since は transcript 無しでも判定したいので下限なしにする
+fn hide_dispatched(snap: &mut Snapshot, labels: &HashMap<String, String>) {
+    let candidate = |r: &PaneRow| {
+        labels.get(&r.key).is_some_and(|l| is_dispatched_label(l)) && r.status != "blocked"
+    };
+    // run が読めない (--runs-dir 不達・run 無し) ときは台帳を判定できないので外さない。
+    // 外す候補が無ければ inbox 全体を parse しない
+    if snap.runs.is_empty() || !snap.panes.iter().any(candidate) {
+        return;
+    }
+    // 本文は要らないので、ヘッダの (from, from_socket) だけを cache 越しに引く
+    let origins: std::collections::HashSet<(String, String)> = snap
+        .files
+        .iter()
+        .filter_map(|(_, p)| msg_origin(p))
+        .collect();
+    let in_ledger = |r: &PaneRow| {
+        // since は見ず pane id と socket の一致だけで判定するので、古い msg が残っていても
+        // 台帳に属すとみなして外さない (安全側)
+        snap.runs.iter().any(|x| {
+            x.orch == r.pane
+                && x.orch_socket
+                    .as_deref()
+                    .is_none_or(|s| canon(s) == canon(&r.socket))
+        }) || origins.contains(&(r.pane.clone(), r.socket.clone()))
+    };
+    let drop: Vec<String> = snap
+        .panes
+        .iter()
+        .filter(|r| candidate(r) && !in_ledger(r))
+        .map(|r| r.key.clone())
+        .collect();
+    snap.panes.retain(|r| !drop.contains(&r.key));
+}
+
+type OriginCache = HashMap<PathBuf, (SystemTime, u64, Option<(String, String)>)>;
+
+/// msg ヘッダの (from, from_socket) を (path, mtime, size) で cache して返す。変わらない msg は開き直さない。
+/// from_socket の無い旧形式は帰属しないので None
+fn msg_origin(path: &Path) -> Option<(String, String)> {
+    static CACHE: OnceLock<Mutex<OriginCache>> = OnceLock::new();
+    let meta = fs::metadata(path).ok()?;
+    let key = (meta.modified().ok()?, meta.len());
+    let mut c = CACHE.get_or_init(Default::default).lock().ok()?;
+    if let Some((t, n, v)) = c.get(path) {
+        if (*t, *n) == key {
+            return v.clone();
+        }
+    }
+    let v = read_msg_origin(path);
+    c.insert(path.to_path_buf(), (key.0, key.1, v.clone()));
+    v
+}
+
+/// 最初の空行までのヘッダだけを読む
+fn read_msg_origin(path: &Path) -> Option<(String, String)> {
+    let (mut from, mut sock) = (None, None);
+    for l in BufReader::new(fs::File::open(path).ok()?).lines() {
+        let l = l.ok()?;
+        if l.is_empty() {
+            break;
+        }
+        match l.split_once(':') {
+            Some(("from", v)) => from = Some(v.trim().to_string()),
+            Some(("from_socket", v)) if !v.trim().is_empty() => sock = Some(canon(v.trim())),
+            _ => {}
+        }
+    }
+    Some((from?, sock?))
 }
 
 fn mtime(p: &Path) -> Option<i64> {
@@ -400,9 +490,15 @@ fn read_runs(dir: &Path, snap: &mut Snapshot) {
             .find_map(|l| l.strip_prefix("orchestrator_pane:"))
             .map(clean)
             .unwrap_or_default();
+        let orch_socket = md
+            .lines()
+            .find_map(|l| l.strip_prefix("orchestrator_socket:"))
+            .map(clean)
+            .filter(|s| !s.is_empty());
         let new = msg_files(&run.join("inbox/new"));
         snap.runs.push(Run {
             orch,
+            orch_socket,
             new: new.len(),
             oldest: new.iter().filter_map(|(_, p)| mtime(p)).min(),
         });
@@ -752,6 +848,16 @@ mod tests {
         r#"{"type":"user","timestamp":"2026-01-02T03:04:05Z","message":{"content":"直して"}}"#;
 
     #[test]
+    fn dispatched_label_shape() {
+        for l in ["repo-123", "repo-bundle-7", "a-b-1"] {
+            assert!(is_dispatched_label(l), "{l} は dispatch の形のはず");
+        }
+        for l in ["watch-worker", "feat-xxx", "-12", "repo-12a", "repo-", ""] {
+            assert!(!is_dispatched_label(l), "{l:?} は dispatch の形でないはず");
+        }
+    }
+
+    #[test]
     fn resident_labels_match_exactly() {
         for l in RESIDENT_LABELS {
             assert!(is_resident(l), "{l} は常駐のはず");
@@ -779,6 +885,29 @@ mod tests {
         fs::write(&f, format!("{T}\n{T}\n")).unwrap();
         assert_eq!(c.get(&f).events.len(), 2, "書き換えた内容を読むはず");
         assert_eq!(c.parses, 2, "書き換えたら解析し直すはず");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn msg_origin_cache_follows_file_change() {
+        let d = tmp("origin");
+        let f = d.join("a.msg");
+        fs::write(&f, "from: w:p1\nfrom_socket: /s/a\n\n本文\n").unwrap();
+        let a = msg_origin(&f);
+        assert_eq!(
+            a.as_ref().map(|x| x.0.as_str()),
+            Some("w:p1"),
+            "from を読むはず"
+        );
+        assert_eq!(msg_origin(&f), a, "変わらなければ同じ値のはず");
+        fs::write(&f, "from: w:p2\nfrom_socket: /s/a\n\n本文 長くした\n").unwrap();
+        assert_eq!(
+            msg_origin(&f).map(|x| x.0),
+            Some("w:p2".to_string()),
+            "size が変われば新しい値のはず"
+        );
+        fs::write(&f, "from: w:p2\n\n本文\n").unwrap();
+        assert_eq!(msg_origin(&f), None, "旧形式は帰属しないはず");
         let _ = fs::remove_dir_all(&d);
     }
 
