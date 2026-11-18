@@ -31,6 +31,16 @@ pub fn is_resident(label: &str) -> bool {
     RESIDENT_LABELS.contains(&label)
 }
 
+/// 監視 skill の dispatch が起こす PR review の pane の label (`<repo略称>-<PR番号>` / `<repo略称>-bundle-<PR番号>`)。
+/// 形だけだと `feat-xxx-34` のような無関係な pane に当たり、run の台帳だけだと窓口や常駐が「run に属さない pane」として消える。
+/// そのため呼び出し側で label の形と「run に属さない」の両方を満たすものだけを外す。
+pub fn is_dispatched_label(label: &str) -> bool {
+    let Some((head, num)) = label.rsplit_once('-') else {
+        return false;
+    };
+    !head.is_empty() && !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit())
+}
+
 pub struct Env {
     pub herdr: Vec<String>,
     pub herdr_dir: PathBuf,
@@ -205,6 +215,7 @@ pub fn gather(env: &Env) -> Snapshot {
     let mut snap = Snapshot::default();
     let own = canon(&env.own_sock.to_string_lossy());
     let mut dup = Vec::new();
+    let mut pane_labels: HashMap<String, String> = HashMap::new();
     for (name, sock) in sessions(env) {
         let socket = sock
             .as_ref()
@@ -313,6 +324,7 @@ pub fn gather(env: &Env) -> Snapshot {
             {
                 continue; // 名前の引き当て (snap.names) は上で済ませてあるので残る
             }
+            pane_labels.insert(tag.clone(), s(p, "label"));
             snap.panes.push(PaneRow {
                 key: tag.clone(),
                 tag,
@@ -339,8 +351,37 @@ pub fn gather(env: &Env) -> Snapshot {
         .sort_by(|a, b| a.pane.cmp(&b.pane).then(a.key.cmp(&b.key)));
     if let Some(runs) = &env.runs {
         read_runs(runs, &mut snap);
+        if !env.show_resident {
+            hide_dispatched(&mut snap, &pane_labels);
+        }
     }
     snap
+}
+
+/// dispatch の pane (label の形が合い、run の台帳に属さず、blocked でない) を一覧から外す。
+/// 台帳に属すとは、run の inbox の msg が pane id と socket で帰属するか、run.md の orchestrator_pane であること。
+/// since は transcript 無しでも判定したいので下限なしにする
+fn hide_dispatched(snap: &mut Snapshot, labels: &HashMap<String, String>) {
+    let msgs = read_msgs(&snap.files, false);
+    let in_ledger = |r: &PaneRow| {
+        let p = core::Pane {
+            pane: r.pane.clone(),
+            socket: r.socket.clone(),
+            since: Some(i64::MIN),
+        };
+        snap.runs.iter().any(|x| x.orch == r.pane) || msgs.iter().any(|m| attributed(&p, &m.msg))
+    };
+    let drop: Vec<String> = snap
+        .panes
+        .iter()
+        .filter(|r| {
+            labels.get(&r.key).is_some_and(|l| is_dispatched_label(l))
+                && r.status != "blocked"
+                && !in_ledger(r)
+        })
+        .map(|r| r.key.clone())
+        .collect();
+    snap.panes.retain(|r| !drop.contains(&r.key));
 }
 
 fn mtime(p: &Path) -> Option<i64> {
@@ -750,6 +791,16 @@ mod tests {
 
     const T: &str =
         r#"{"type":"user","timestamp":"2026-01-02T03:04:05Z","message":{"content":"直して"}}"#;
+
+    #[test]
+    fn dispatched_label_shape() {
+        for l in ["repo-123", "repo-bundle-7", "a-b-1"] {
+            assert!(is_dispatched_label(l), "{l} は dispatch の形のはず");
+        }
+        for l in ["watch-worker", "feat-xxx", "-12", "repo-12a", "repo-", ""] {
+            assert!(!is_dispatched_label(l), "{l:?} は dispatch の形でないはず");
+        }
+    }
 
     #[test]
     fn resident_labels_match_exactly() {

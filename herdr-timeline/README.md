@@ -5,7 +5,7 @@ herdr (端末の multiplexer) の pane を「要対応 / 作業中 / done・idle
 - 要対応: blocked の pane と、inbox/new に未処理の報告がある run
 - 作業中: working の pane。brief のゴールと step の進捗を要約に出す
 - done / idle: workspace ごとに畳んで件数だけ出す
-- 常駐の pane (Cue の回答を処理する専任 worker、watch 系の監視、watch-worker、review-submit) は既定で一覧に出さない。herdr の API に常駐の印が無いので、pane の label の完全一致で見分ける (一覧は `src/data.rs` の `RESIDENT_LABELS`)。ただし blocked の常駐 pane は人の対応待ちなので隠さない。`--show-resident` で全部出せる
+- 常駐の pane (Cue の回答を処理する専任 worker、watch 系の監視、watch-worker、review-submit) は既定で一覧に出さない。herdr の API に常駐の印が無いので、pane の label の完全一致で見分ける (一覧は `src/data.rs` の `RESIDENT_LABELS`)。監視 skill の dispatch が起こす PR review の pane (label が `<repo略称>-<PR番号>` / `<repo略称>-bundle-<PR番号>`) も外す。`feat-xxx-34` のような無関係な pane に当たらないよう、label の形と「run に属さない」(inbox の msg が帰属しない、orchestrator_pane でない) の両方で見分け、`--runs-dir` が無いときは外さない。ただし blocked の pane は人の対応待ちなので隠さない。`--show-resident` で全部出せる
 - 状態の記号と色は herdr 本体の `status_indicators = "symbols"` と同じ (blocked は赤の `×`、working は黄の `◐`、done は青緑の `✓`、idle は緑の `○`、unknown は `·`)。色が出ない端末でも記号の形で区別できる。run の未処理の報告の行頭にある `▲` は pane の状態ではなく別の印なので、そのまま残している
 
 ## 読み取り範囲と安全設計
@@ -33,7 +33,7 @@ herdr-timeline [--once] [--interval N] [--width N] [--timeline PANE_ID] [--runs-
 | `--width N` | 表示幅を固定する (既定は端末幅 - 1、最小 30、上限 1000) |
 | `--timeline PANE_ID` | pane の Timeline を 1 回出して終わる (非対話)。`<session>/<pane>` でなく pane id だけを渡したときは、今の session の pane を優先し、無ければ他の session から探す |
 | `--runs-dir DIR` | run のディレクトリ (`DIR/<run>/run.md`、`DIR/<run>/inbox/{new,cur}/*.msg`)。無ければ報告・進捗・未処理の報告を出さないだけで動く |
-| `--show-resident` | 常駐の pane (label が `RESIDENT_LABELS` と完全一致) も一覧に出す。`--timeline` では常に出る |
+| `--show-resident` | 常駐の pane (label が `RESIDENT_LABELS` と完全一致) と dispatch の PR review の pane も一覧に出す。`--timeline` では常に出る |
 | `-h`, `--help` | 説明を出す |
 
 run のディレクトリに既定値は無い。取り込み側が `--runs-dir` か環境変数で渡す。

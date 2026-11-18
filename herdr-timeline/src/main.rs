@@ -42,7 +42,7 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
   --timeline PANE_ID pane の Timeline を 1 回出して終わる (非対話。常駐の pane も引ける)
   --runs-dir DIR     run のディレクトリ (DIR/<run>/run.md と DIR/<run>/inbox/{new,cur}/*.msg)。
                      環境変数 HERDR_TIMELINE_RUNS_DIR でも渡せる。無ければ報告・進捗・未処理の報告を出さない
-  --show-resident    常駐の pane (watch 系、Cue 専任、review-submit) は既定で一覧に出さない。これで出す
+  --show-resident    常駐の pane (watch 系、Cue 専任、review-submit) と監視 skill が起こす PR review の pane は既定で一覧に出さない。これで出す
   -h, --help         この説明を出す
 
 読み取り範囲:
