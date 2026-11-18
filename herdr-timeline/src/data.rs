@@ -308,7 +308,7 @@ pub fn gather(env: &Env) -> Snapshot {
                 .filter(|v| !v.is_empty());
             // blocked は人の対応待ちなので、常駐でも隠さない
             if !env.show_resident
-                && is_resident(&clean(&s(p, "label")))
+                && is_resident(&s(p, "label"))
                 && status_of(&s(p, "agent_status")) != "blocked"
             {
                 continue; // 名前の引き当て (snap.names) は上で済ませてあるので残る
@@ -756,7 +756,13 @@ mod tests {
         for l in RESIDENT_LABELS {
             assert!(is_resident(l), "{l} は常駐のはず");
         }
-        for l in ["impl-task", "watch-worker2", "Watch-worker", ""] {
+        for l in [
+            "impl-task",
+            "watch-worker2",
+            "Watch-worker",
+            "watch-worker ",
+            "",
+        ] {
             assert!(!is_resident(l), "{l:?} は常駐でないはず (完全一致のみ)");
         }
     }
