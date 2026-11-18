@@ -52,13 +52,27 @@ pub fn paint(color: bool, s: &str, code: &str) -> String {
     }
 }
 
+// herdr 本体の status_indicators = "symbols" (src/client/shell.rs の status_icon、v0.9.5) と同じ記号。
+// 既定の "dots" は blocked / working / done がどれも ● で、色が出ない端末では区別できないので symbols 側に揃える
 fn symbol(status: &str) -> &'static str {
     match status {
-        "blocked" => "▲",
-        "working" => "●",
+        "blocked" => "×",
+        "working" => "◐",
         "idle" => "○",
         "done" => "✓",
-        _ => "?",
+        _ => "·",
+    }
+}
+
+// blocked の行は行全体を赤太字で塗る (whole) ので記号にはこの色を使わない。ここに残すのは status と色の対応を 1 か所に揃えるため
+// herdr 本体の status_color (同ファイル) と同じ対応。palette の yellow / red / teal / green / overlay0 を ANSI の 33 / 31 / 36 / 32 / dim に当てる
+fn status_style(status: &str) -> &'static str {
+    match status {
+        "blocked" => "31",
+        "working" => "33",
+        "idle" => "32",
+        "done" => "36",
+        _ => "2",
     }
 }
 
@@ -138,12 +152,44 @@ pub fn step_line(d: &Goal, width: usize) -> Option<String> {
     Some(clip(&line, width))
 }
 
+/// tally の行を薄く塗り、tally の語のうち記号だけを状態の色に戻す。
+/// wrap は空白で折るので tally は常に全行の末尾 W 語になる。語の位置で決めるので、名前が折り返されて同じ文字列が出ても塗らない
+fn tint_tally(rows: &[&Row], parts: &[String], color: bool) -> Vec<String> {
+    let total: usize = parts.iter().map(|p| p.split_whitespace().count()).sum();
+    let start = total.saturating_sub(tally(rows).split_whitespace().count());
+    let mut idx = 0;
+    parts
+        .iter()
+        .map(|part| {
+            let toks: Vec<String> = part
+                .split(' ')
+                .map(|t| {
+                    if t.is_empty() {
+                        return t.to_string();
+                    }
+                    idx += 1;
+                    let k = ["done", "idle", "unknown"]
+                        .into_iter()
+                        .find(|k| symbol(k) == t && rows.iter().any(|x| x.status == *k));
+                    match k {
+                        Some(k) if color && idx > start => {
+                            format!("\x1b[0m{}\x1b[2m", paint(true, symbol(k), status_style(k)))
+                        }
+                        _ => t.to_string(),
+                    }
+                })
+                .collect();
+            paint(color, &toks.join(" "), "2")
+        })
+        .collect()
+}
+
 fn tally(rows: &[&Row]) -> String {
     let c = |s: &str| rows.iter().filter(|x| x.status == s).count();
-    [("done", "done"), ("idle", "idle"), ("unknown", "不明")]
+    ["done", "idle", "unknown"]
         .iter()
-        .filter(|(k, _)| c(k) > 0)
-        .map(|(k, l)| format!("{l} {}", c(k)))
+        .filter(|k| c(k) > 0)
+        .map(|k| format!("{} {}", symbol(k), c(k)))
         .collect::<Vec<_>>()
         .join("  ")
 }
@@ -281,7 +327,13 @@ pub fn layout(v: &View) -> (Vec<String>, Vec<(String, String)>, Option<String>) 
                 String::new()
             };
             let lead = if first {
-                format!("{key}{} ", symbol(&x.status))
+                // whole の行は行全体が赤太字なので、記号だけを塗ると途中で色が切れる
+                let sym = if whole {
+                    symbol(&x.status).to_string()
+                } else {
+                    paint(symbol(&x.status), status_style(&x.status))
+                };
+                format!("{key}{sym} ")
             } else {
                 " ".repeat(key_w as usize + 2)
             };
@@ -400,16 +452,11 @@ pub fn layout(v: &View) -> (Vec<String>, Vec<(String, String)>, Option<String>) 
                 (inner - 1).max(2) as usize,
                 (inner - 1).max(2) as usize,
             );
-            let mut b = vec![format!(
-                "  {}",
-                paint(parts.first().map_or("", String::as_str), "2")
-            )];
-            b.extend(
-                parts
-                    .iter()
-                    .skip(1)
-                    .map(|c| format!("    {}", paint(c, "2"))),
-            );
+            let b = tint_tally(rs, &parts, v.color)
+                .into_iter()
+                .enumerate()
+                .map(|(n, l)| format!("{}{l}", if n == 0 { "  " } else { "    " }))
+                .collect::<Vec<_>>();
             blocks.push(b);
         }
     }
@@ -561,6 +608,186 @@ mod tests {
         assert!(
             step_line(&Goal::default(), 200).is_none(),
             "steps が無ければ出さないはず"
+        );
+    }
+
+    #[test]
+    fn symbols_match_herdr_and_are_distinct_without_color() {
+        let all = ["blocked", "working", "done", "idle", "unknown"];
+        let got: Vec<&str> = all.iter().map(|s| symbol(s)).collect();
+        assert_eq!(
+            got,
+            ["×", "◐", "✓", "○", "·"],
+            "herdr の symbols と同じ記号のはず"
+        );
+        let mut uniq = got.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(
+            uniq.len(),
+            all.len(),
+            "色が無くても記号だけで区別できるはず"
+        );
+        assert_eq!(
+            symbol("something-else"),
+            "·",
+            "未知の状態は unknown と同じ記号のはず"
+        );
+    }
+
+    #[test]
+    fn tally_uses_icons_not_words() {
+        let rows = [
+            row("a", "done", "p1", None),
+            row("b", "idle", "p2", None),
+            row("c", "idle", "p3", None),
+            row("d", "unknown", "p4", None),
+        ];
+        let refs: Vec<&Row> = rows.iter().collect();
+        assert_eq!(
+            tally(&refs),
+            "✓ 1  ○ 2  · 1",
+            "文字でなく記号と件数を出すはず"
+        );
+        let tinted = tint_tally(&refs, &["ws  ✓ 1  ○ 2  · 1".to_string()], true).concat();
+        assert!(
+            tinted.contains("\x1b[36m✓\x1b[0m") && tinted.contains("\x1b[32m○\x1b[0m"),
+            "色ありなら記号が状態の色になるはず: {tinted:?}"
+        );
+        assert!(
+            !tint_tally(&refs, &["ws  ✓ 1".to_string()], false)
+                .concat()
+                .contains('\x1b'),
+            "色なしなら制御文字を出さないはず"
+        );
+    }
+
+    #[test]
+    fn tint_tally_skips_same_text_in_workspace_name() {
+        let rows = [
+            row("a", "done", "p1", None),
+            row("b", "unknown", "p2", None),
+        ];
+        let refs: Vec<&Row> = rows.iter().collect();
+        let t = tint_tally(&refs, &["ws ✓ 1 · 10  ✓ 1  · 1".to_string()], true).concat();
+        assert!(
+            t.starts_with("\x1b[2mws ✓ 1 · 10  "),
+            "名前側は塗らないはず: {t:?}"
+        );
+        assert!(
+            t.contains("\x1b[36m✓\x1b[0m"),
+            "末尾の tally は塗るはず: {t:?}"
+        );
+        assert_eq!(
+            t.matches("\x1b[36m").count(),
+            1,
+            "塗るのは 1 か所のはず: {t:?}"
+        );
+    }
+
+    #[test]
+    fn tint_tally_skips_wrapped_name_continuation() {
+        let rows = [
+            row("a", "done", "p1", None),
+            row("b", "unknown", "p2", None),
+        ];
+        let refs: Vec<&Row> = rows.iter().collect();
+        let parts = ["ws ✓ 1".to_string(), "foo ✓ 1  ✓ 1  · 1".to_string()];
+        let t = tint_tally(&refs, &parts, true);
+        assert!(
+            t[0].starts_with("\x1b[2mws ✓ 1") && t[1].starts_with("\x1b[2mfoo ✓ 1  "),
+            "名前側の記号は塗らないはず: {t:?}"
+        );
+        assert_eq!(
+            t.concat().matches("\x1b[36m").count(),
+            1,
+            "塗るのは tally の ✓ だけのはず: {t:?}"
+        );
+        assert!(t[1].contains("\x1b[0m"), "tally の · も塗るはず: {t:?}");
+    }
+
+    #[test]
+    fn blocked_row_keeps_whole_line_red_and_widths_hold_with_color() {
+        let rows = [
+            row("a", "blocked", "p1", Some("t1")),
+            row("b", "done", "p2", Some("t2")),
+            row("c", "idle", "p3", Some("t3")),
+        ];
+        let (names, ws) = (HashMap::new(), HashMap::new());
+        let v = View {
+            rows: &rows,
+            runs: &[],
+            warn: &[],
+            names: &names,
+            ws_names: &ws,
+            width: 40,
+            color: true,
+            select: None,
+            height: None,
+            now: 10,
+            expanded: None,
+            off: &|_| 0,
+        };
+        let lines = layout(&v).0;
+        let blocked = lines.iter().find(|l| l.contains('×')).expect("blocked 行");
+        assert!(
+            blocked.matches("\x1b[0m").count() == 1 && blocked.ends_with("\x1b[0m"),
+            "行全体を 1 回で塗り、途中で色を切らないはず: {blocked:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("\x1b[36m✓\x1b[0m") && l.contains("\x1b[32m○\x1b[0m")),
+            "畳んだ行は色ありで記号が塗られるはず: {lines:?}"
+        );
+        let strip = |s: &str| {
+            let mut o = String::new();
+            let mut esc = false;
+            for c in s.chars() {
+                match (esc, c) {
+                    (_, '\x1b') => esc = true,
+                    (true, 'm') => esc = false,
+                    (false, c) => o.push(c),
+                    _ => {}
+                }
+            }
+            o
+        };
+        assert!(
+            lines.iter().all(|l| width_of(&strip(l)) <= 40),
+            "色を除いた幅が width 以下のはず: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn working_row_symbol_is_colored_only_with_color() {
+        let rows = [row("a", "working", "p1", Some("t1"))];
+        let (names, ws) = (HashMap::new(), HashMap::new());
+        let mk = |color| {
+            let v = View {
+                rows: &rows,
+                runs: &[],
+                warn: &[],
+                names: &names,
+                ws_names: &ws,
+                width: 80,
+                color,
+                select: None,
+                height: None,
+                now: 10,
+                expanded: None,
+                off: &|_| 0,
+            };
+            layout(&v).0.join("\n")
+        };
+        assert!(
+            mk(true).contains("\x1b[33m◐\x1b[0m"),
+            "作業中は黄色の ◐ のはず"
+        );
+        let plain = mk(false);
+        assert!(
+            plain.contains('◐') && !plain.contains('\x1b'),
+            "色なしでも ◐ は出るはず: {plain:?}"
         );
     }
 }
