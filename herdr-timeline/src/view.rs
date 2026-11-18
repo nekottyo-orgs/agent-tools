@@ -135,9 +135,10 @@ pub enum Split {
     Stack { list_h: usize, tl_h: usize },
 }
 
-/// 幅で並べる / 積むを決める。積むときの高さは一覧 6 : Timeline 4 で、どちらも 3 行は確保する
-pub fn split(width: usize, height: usize) -> Split {
-    if width >= SIDE_MIN_WIDTH {
+/// 端末の列数 (phys) で並べる / 積むを決め、各幅は描画幅 width (列数 - 1) から取る。
+/// 積むときの高さは一覧 6 : Timeline 4 で、どちらも 3 行は確保する
+pub fn split(phys: usize, width: usize, height: usize) -> Split {
+    if phys >= SIDE_MIN_WIDTH {
         return Split::Side {
             list_w: LIST_W,
             tl_w: width - LIST_W - width_of(SEP),
@@ -572,14 +573,14 @@ mod tests {
     #[test]
     fn split_switches_at_side_min_width() {
         assert!(
-            matches!(split(119, 30), Split::Stack { .. }),
+            matches!(split(119, 118, 30), Split::Stack { .. }),
             "119 は積むはず"
         );
         assert_eq!(
-            split(120, 30),
+            split(120, 119, 30),
             Split::Side {
                 list_w: LIST_W,
-                tl_w: 120 - LIST_W - 3
+                tl_w: 119 - LIST_W - 3
             },
             "120 は並べ、区切りの 3 桁を引くはず"
         );
@@ -589,10 +590,10 @@ mod tests {
     fn side_lines_fit_width_even_with_color_and_wide_chars() {
         let list = vec![paint(true, "日本語の一覧", "1"), "abc".to_string()];
         let tl = timeline_panel(Some(&detail_of(3)), 47, true, 1000, &|_| 0);
-        let sp = split(120, 30);
+        let sp = split(120, 119, 30);
         let out = compose(&sp, list, tl, 30);
         assert!(
-            out.iter().all(|l| visible_width(l) <= 120),
+            out.iter().all(|l| visible_width(l) <= 119),
             "どの行も端末幅を超えないはず: {out:?}"
         );
         assert!(out[0].contains(" │ "), "区切りが出るはず: {out:?}");
@@ -601,7 +602,7 @@ mod tests {
     #[test]
     fn stack_lines_fit_height() {
         for h in [2, 5, 10, 24, 40] {
-            let sp = split(80, h);
+            let sp = split(80, 79, h);
             let list: Vec<String> = (0..100).map(|i| format!("l{i}")).collect();
             let tl = timeline_panel(Some(&detail_of(20)), 80, false, 1000, &|_| 0);
             assert!(

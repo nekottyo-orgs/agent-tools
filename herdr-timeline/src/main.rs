@@ -58,7 +58,7 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
   Enter     選んだ行の tab へ移動する (herdr tab focus)
   Esc / q   終了する (Ctrl-C でも端末を戻して終わる)
 
-選んだ行の Timeline は一覧と一緒に常に出す (端末が 121 桁以上は右、未満は下)。
+選んだ行の Timeline は一覧と一緒に常に出す (端末が 120 桁以上は右、未満は下)。
 
 環境変数:
   HERDR_TIMELINE_HERDR      herdr コマンド (既定 herdr、空白区切りで分割)
@@ -449,7 +449,8 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
                 let height = term_size().1.saturating_sub(1).max(2);
                 let width = term_width(o.width);
                 let body_h = height - usize::from(tty);
-                let sp = split(width, body_h);
+                let phys = o.width.unwrap_or_else(|| term_size().0);
+                let sp = split(phys, width, body_h);
                 let (list_w, list_h) = list_dims(tty, &sp, width, body_h);
                 let v = View {
                     rows: &rows,
@@ -716,7 +717,7 @@ mod tests {
 
     #[test]
     fn list_dims_uses_full_size_without_tty() {
-        let sp = split(150, 30);
+        let sp = split(150, 149, 30);
         assert!(matches!(sp, Split::Side { .. }), "広いと並ぶはず");
         assert_eq!(
             list_dims(false, &sp, 150, 30),
