@@ -1,7 +1,7 @@
 # PR が触った path から tool の label を付ける。release notes は label で tool ごとに絞る (各 tool の .github/release.yml)。
 # 外部 action は使わず、runner に入っている gh だけで付ける。
 # この repo は fork の PR を受け付けないので pull_request で足りる (同じ repo の PR なら書き込み権限の token が使える)。PR の code は checkout しない。
-# path は gh の出力を比較に使うだけで、shell には渡さない。label が付く前に release PR が merge されると、その PR は notes に載らない (限界)。
+# path は gh の出力を比較に使うだけで、shell には渡さない。label が付く前に release PR が merge されると、その PR は notes に載らない (限界)。conflict を抱えて開いた PR は、base 側の変更だけで解消すると label が付かない (限界)。
 name: labeler
 
 on:
