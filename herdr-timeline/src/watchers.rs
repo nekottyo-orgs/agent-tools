@@ -79,10 +79,14 @@ fn pid_running(ps: &str, pidfile: &Path, script: &str) -> bool {
 }
 
 fn any_running(ps: &str, script: &str) -> bool {
-    // herdr-timeline 自身の行 (引数に script 名が入りうる) は数えない
-    ps_out(ps, &["-axo", "command="]).is_some_and(|o| {
-        o.lines()
-            .any(|l| l.contains(script) && !l.contains("herdr-timeline"))
+    // 自プロセスの行 (引数に script 名が入りうる) だけを pid で除く。path 名では除かない
+    let me = std::process::id().to_string();
+    ps_out(ps, &["-axo", "pid=,command="]).is_some_and(|o| {
+        o.lines().any(|l| {
+            let l = l.trim_start();
+            let (pid, cmd) = l.split_once(' ').unwrap_or((l, ""));
+            pid != me && cmd.contains(script)
+        })
     })
 }
 

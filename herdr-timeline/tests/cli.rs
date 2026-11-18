@@ -1192,11 +1192,11 @@ const WATCH_ENV: [&str; 4] = [
     "HERDR_TIMELINE_PS_BIN",
 ];
 
-/// stub ps。-p の問い合わせには ps-pid、-axo には ps-all の中身を返す
+/// stub ps。-p の問い合わせには ps-pid、-axo には ps-all の中身を返す (SELF は呼び出し元 = herdr-timeline の pid に置換)
 fn watch_fx(name: &str) -> (Fx, Vec<(&'static str, String)>) {
     use std::os::unix::fs::PermissionsExt;
     let fx = Fx::new(name);
-    fx.write("ps/ps.sh", "#!/bin/sh\nd=$(dirname \"$0\")\ncase \"$1\" in\n  -o) cat \"$d/ps-pid\" ;;\n  -axo) cat \"$d/ps-all\" ;;\nesac\n");
+    fx.write("ps/ps.sh", "#!/bin/sh\nd=$(dirname \"$0\")\ncase \"$1\" in\n  -o) cat \"$d/ps-pid\" ;;\n  -axo) sed \"s/SELF/$PPID/\" \"$d/ps-all\" ;;\nesac\n");
     fs::set_permissions(fx.path("ps/ps.sh"), fs::Permissions::from_mode(0o755)).unwrap();
     fx.write("ps/ps-pid", "");
     fx.write("ps/ps-all", "");
@@ -1269,14 +1269,20 @@ fn watchers_pane_turns_uses_full_ps_listing_without_itself() {
     let (fx, env) = watch_fx("w-turns");
     fx.write(
         "ps/ps-all",
-        "herdr-timeline --json watch-pane-turns.sh\nvim a\n",
+        "SELF herdr-timeline --json watch-pane-turns.sh\n 1 vim a\n",
     );
     assert_eq!(
         watchers_of(&fx, &env)[0]["running"],
         false,
         "自分の行は数えない"
     );
-    fx.write("ps/ps-all", "vim a\nbash /x/watch-pane-turns.sh\n");
+    fx.write("ps/ps-all", "1 vim a\n22 bash /x/watch-pane-turns.sh\n");
+    assert_eq!(watchers_of(&fx, &env)[0]["running"], true);
+    // 自分でない pid の行は、path に herdr-timeline を含んでも数える
+    fx.write(
+        "ps/ps-all",
+        "SELF herdr-timeline --json\n33 bash /x/herdr-timeline/scripts/watch-pane-turns.sh\n",
+    );
     assert_eq!(watchers_of(&fx, &env)[0]["running"], true);
 }
 
