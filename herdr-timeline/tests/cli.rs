@@ -727,3 +727,317 @@ fn req4_pastes_and_skip_prefixes_with_leading_whitespace() {
         "先頭に改行の付いた skip 前置きは出ないはず: {out}"
     );
 }
+
+// --json 用。常駐・dispatch・通常の pane を混ぜる。RESIDENT_LABELS は期待値に使わず、ここに独立した一覧を書く
+const RESIDENT: [&str; 5] = [
+    "watch-my-pr-reviews",
+    "watch-other-pr-reviews",
+    "watch-worker",
+    "review-submit",
+    "Cue回答の監視",
+];
+
+fn mixed_fx(name: &str) -> Fx {
+    let fx = Fx::new(name);
+    let mut panes: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fx.path("herdr/panes.json")).unwrap()).unwrap();
+    let list = panes["result"]["panes"].as_array_mut().unwrap();
+    list.push(pane("wA:p5", "working", SID2, "tA:2", "wA", "repo-123"));
+    list.push(pane(
+        "wA:p6",
+        "working",
+        SID2,
+        "tA:2",
+        "wA",
+        "repo-bundle-45",
+    ));
+    list.push(pane("wA:p7", "blocked", SID2, "tA:2", "wA", "repo-67"));
+    list.push(pane("wA:p8", "working", SID2, "tA:2", "wA", RESIDENT[2]));
+    list.push(pane("wA:p9", "blocked", SID2, "tA:2", "wA", RESIDENT[0]));
+    list.push(pane("wA:p10", "blocked", SID2, "tA:2", "wA", RESIDENT[3]));
+    list.push(pane("wA:p11", "idle", SID2, "tA:2", "wA", RESIDENT[4]));
+    list.push(pane("wB:p2", "unknown", SID2, "tB:1", "wB", "補助"));
+    fx.write("herdr/panes.json", &panes.to_string());
+    // wA:p6 は台帳に属す (inbox の msg が帰属する)
+    fx.msg(
+        "runs/r1/inbox/new/1.msg",
+        "wA:p6",
+        Some(&fx.sock()),
+        "done",
+        "2026-01-02T03:10:00Z",
+        "報告",
+    );
+    fx
+}
+
+fn json_of(o: &Output) -> serde_json::Value {
+    let s = stdout(o);
+    assert!(
+        s.ends_with("}\n") && !s.ends_with("\n\n"),
+        "JSON と改行 1 つだけのはず: {s}"
+    );
+    serde_json::from_str(&s).unwrap_or_else(|e| panic!("stdout が JSON でない ({e}): {s}"))
+}
+
+fn jpane<'a>(v: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+    v["panes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["pane_id"] == id)
+        .unwrap_or_else(|| panic!("{id} が無い: {v}"))
+}
+
+/// --once の出力の (個別の行の pane tag, 畳んだ件数の合計)。個別の行は状態の記号 (× ◐) で始まり、行末が pane tag。
+/// 畳んだ行 (done / idle の節) は "<記号> <件数>" の並び
+fn once_counts(out: &str) -> (Vec<String>, usize) {
+    let mut rows = Vec::new();
+    let mut folded = 0;
+    let mut in_fold = false;
+    for l in out.lines() {
+        let t = l.trim_start();
+        if t.starts_with('■') {
+            in_fold = t.starts_with("■ done");
+        } else if in_fold {
+            let w: Vec<&str> = t.split_whitespace().collect();
+            folded += w
+                .windows(2)
+                .filter(|p| ["○", "✓", "·"].contains(&p[0]))
+                .filter_map(|p| p[1].parse::<usize>().ok())
+                .sum::<usize>();
+        } else if t.starts_with('×') || t.starts_with('◐') {
+            rows.push(t.split_whitespace().last().unwrap().to_string());
+        }
+    }
+    (rows, folded)
+}
+
+/// (blocked か working の key の集合, それ以外の数)
+fn json_split(v: &serde_json::Value, all: bool) -> (Vec<String>, usize) {
+    let mut keys = Vec::new();
+    let mut rest = 0;
+    for p in v["panes"].as_array().unwrap() {
+        if !all && p["hidden"] == true {
+            continue;
+        }
+        match p["status"].as_str().unwrap() {
+            "blocked" | "working" => keys.push(p["key"].as_str().unwrap().to_string()),
+            _ => rest += 1,
+        }
+    }
+    keys.sort();
+    (keys, rest)
+}
+
+#[test]
+fn json_matches_once_rows_and_folded_counts() {
+    let fx = mixed_fx("json-once");
+    let v = json_of(&fx.run(&["--json"]));
+    assert!(
+        v["warnings"].as_array().unwrap().is_empty(),
+        "警告は無いはず: {v}"
+    );
+    // (a) hidden でない blocked / working は --once の個別の行と 1 対 1、(b) 残りは畳んだ件数の合計
+    let (mut rows, folded) = once_counts(&stdout(&fx.run(&["--once", "--width", "100"])));
+    rows.sort();
+    let (keys, rest) = json_split(&v, false);
+    assert_eq!(keys, rows, "個別の行の集合が一致するはず");
+    assert_eq!(rest, folded, "畳んだ件数の合計が一致するはず");
+    // (c) 全 pane の集合は --once --show-resident と等しい
+    let (mut rows, folded) = once_counts(&stdout(&fx.run(&[
+        "--once",
+        "--width",
+        "100",
+        "--show-resident",
+    ])));
+    rows.sort();
+    let (keys, rest) = json_split(&v, true);
+    assert_eq!(
+        keys, rows,
+        "--show-resident の個別の行は全 pane と一致するはず"
+    );
+    assert_eq!(
+        rest, folded,
+        "--show-resident の畳んだ件数は全 pane と一致するはず"
+    );
+}
+
+#[test]
+fn json_marks_resident_and_dispatch_with_owner() {
+    let fx = mixed_fx("json-kind");
+    let v = json_of(&fx.run(&["--json"]));
+    let f = |id: &str| {
+        let p = jpane(&v, id);
+        (
+            p["hidden"].clone(),
+            p["hidden_reason"].clone(),
+            p["owner"].clone(),
+        )
+    };
+    assert_eq!(
+        f("wA:p8"),
+        (json!(true), json!("resident"), json!("watch-worker")),
+        "常駐は隠すはず"
+    );
+    assert_eq!(
+        f("wA:p11"),
+        (json!(true), json!("resident"), json!(null)),
+        "watch- 以外の常駐は owner が null のはず"
+    );
+    assert_eq!(
+        f("wA:p9"),
+        (json!(false), json!(null), json!("watch-my-pr-reviews")),
+        "blocked の常駐は隠さず owner を持つはず"
+    );
+    assert_eq!(
+        f("wA:p5"),
+        (json!(true), json!("dispatch"), json!("repo#123")),
+        "台帳に属さない dispatch は隠すはず"
+    );
+    assert_eq!(
+        f("wA:p7"),
+        (json!(false), json!(null), json!("repo#67")),
+        "blocked の dispatch は隠さず owner を持つはず"
+    );
+    assert_eq!(
+        f("wA:p6"),
+        (json!(false), json!(null), json!(null)),
+        "台帳に属す pane は分類しないはず"
+    );
+    assert_eq!(
+        f("wA:p2"),
+        (json!(false), json!(null), json!(null)),
+        "通常の pane は何も付かないはず"
+    );
+    // bundle は owner の repo 略称から落とす
+    let fx2 = Fx::new("json-bundle");
+    let mut panes: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fx2.path("herdr/panes.json")).unwrap()).unwrap();
+    panes["result"]["panes"].as_array_mut().unwrap().push(pane(
+        "wA:p6",
+        "working",
+        SID2,
+        "tA:2",
+        "wA",
+        "repo-bundle-45",
+    ));
+    fx2.write("herdr/panes.json", &panes.to_string());
+    let v2 = json_of(&fx2.run(&["--json"]));
+    assert_eq!(
+        jpane(&v2, "wA:p6")["owner"],
+        json!("repo#45"),
+        "-bundle は落とすはず"
+    );
+    // --show-resident を付けても JSON の hidden は変わらない
+    assert_eq!(
+        v,
+        json_of(&fx.run(&["--json", "--show-resident"])),
+        "--show-resident で変わらないはず"
+    );
+    // 秘匿する項目は出さない
+    let s = v.to_string();
+    for k in ["socket", "transcript", "session", SID2] {
+        assert!(!s.contains(k), "{k} は出さないはず: {s}");
+    }
+}
+
+#[test]
+fn json_dispatch_not_marked_without_readable_runs() {
+    let fx = mixed_fx("json-noruns");
+    let v = json_of(&fx.run_with(&["--json"], false));
+    let p = jpane(&v, "wA:p5");
+    assert_eq!(
+        (&p["hidden"], &p["owner"]),
+        (&json!(false), &json!(null)),
+        "run が読めなければ dispatch にしないはず"
+    );
+}
+
+#[test]
+fn json_conflicts_with_timeline_and_implies_once() {
+    let fx = Fx::new("json-args");
+    let o = fx.run(&["--json", "--timeline", "wA:p1"]);
+    assert_eq!(o.status.code(), Some(2), "併用は引数の誤りのはず");
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("使い方"),
+        "USAGE を出すはず"
+    );
+    assert!(o.stdout.is_empty(), "stdout には何も出さないはず");
+    // --once なしでも 1 回で終わる (run は 10 秒で打ち切る)
+    assert_eq!(
+        fx.run(&["--json"]).status.code(),
+        Some(0),
+        "--once を含意するはず"
+    );
+}
+
+#[test]
+fn json_warns_when_pane_list_fails() {
+    let fx = Fx::new("json-warn");
+    fx.write("herdr/herdr.sh", "exit 1\n");
+    let v = json_of(&fx.run(&["--json"]));
+    assert!(
+        v["panes"].as_array().unwrap().is_empty(),
+        "panes は空のはず: {v}"
+    );
+    assert!(
+        !v["warnings"].as_array().unwrap().is_empty(),
+        "失敗は warnings に出るはず: {v}"
+    );
+}
+
+#[test]
+fn json_inbox_counts_attributed_msgs_only() {
+    let fx = Fx::new("json-inbox");
+    fx.transcript(SID2, &[user("2026-01-02T03:00:00Z", "実装して")]);
+    fx.transcript(SID1, &[user("2026-01-02T03:00:00Z", "調べて")]);
+    let sock = fx.sock();
+    let m = |n: &str, from: &str, s: Option<&str>, at: &str| {
+        fx.msg(
+            &format!("runs/r1/inbox/new/{n}.msg"),
+            from,
+            s,
+            "report",
+            at,
+            "報告",
+        );
+    };
+    m("1", "wA:p2", Some(&sock), "2026-01-02T03:10:00Z");
+    m("2", "wA:p2", Some(&sock), "2026-01-02T03:20:00Z");
+    m(
+        "3",
+        "wA:p2",
+        Some("/nonexistent/other.sock"),
+        "2026-01-02T03:30:00Z",
+    );
+    m("4", "wA:p2", None, "2026-01-02T03:40:00Z");
+    m("5", "wA:p2", Some(&sock), "2026-01-02T02:59:59Z");
+    let v = json_of(&fx.run(&["--json"]));
+    // 2026-01-02T03:20:00Z = 1767324000
+    assert_eq!(
+        jpane(&v, "wA:p2")["inbox"],
+        json!({"count": 2, "last_at": 1767324000}),
+        "帰属する msg だけ数えるはず"
+    );
+    assert_eq!(
+        jpane(&v, "wA:p1")["inbox"],
+        json!({"count": 0, "last_at": null}),
+        "msg が無ければ 0 件のはず"
+    );
+    assert_eq!(
+        jpane(&v, "wA:p3")["inbox"],
+        json!(null),
+        "transcript が無い pane は null のはず"
+    );
+    assert!(
+        jpane(&v, "wA:p2")["working_secs"]
+            .as_i64()
+            .is_some_and(|n| n > 0),
+        "working は transcript の起点からの経過を持つはず: {v}"
+    );
+    assert_eq!(
+        jpane(&v, "wA:p1")["working_secs"],
+        json!(null),
+        "working 以外は null のはず"
+    );
+}
