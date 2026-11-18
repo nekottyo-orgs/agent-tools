@@ -26,9 +26,10 @@ Release の asset (`herdr-timeline-<target>` と `.sha256`) を取って検証�
 
 ```bash
 gh release download herdr-timeline/v<version> --repo nekottyo/agent-tools --pattern 'herdr-timeline-<target>*'
-shasum -a 256 -c herdr-timeline-<target>.sha256
-chmod +x herdr-timeline-<target>
-mv herdr-timeline-<target> ~/.cargo/bin/herdr-timeline
+shasum -a 256 -c herdr-timeline-<target>.sha256 \
+  && chmod +x herdr-timeline-<target> \
+  && mkdir -p "$HOME/.cargo/bin" \
+  && mv herdr-timeline-<target> "$HOME/.cargo/bin/herdr-timeline"
 ```
 
 `cargo install --path herdr-timeline --locked` でも入れられる。

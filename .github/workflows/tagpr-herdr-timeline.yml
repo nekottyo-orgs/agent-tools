@@ -1,6 +1,8 @@
 # herdr-timeline の release の自動化。仕組みと前提は tagpr.yml と同じ (設定は herdr-timeline/.tagpr)。
 # bash-gates の merge で herdr-timeline の release PR が更新されないよう、herdr-timeline/ の変更だけで走らせる。
 # docs と markdown だけの変更では走らせない (理由は tagpr.yml と同じ)。
+# paths は後ろに書いたものが前の一致を外す。tagpr が release PR で更新する CHANGELOG.md だけは除外から戻す。
+# 初回の release PR が Cargo.toml を変えないと、merge の push が markdown だけの変更になり tag が作られないため。
 name: tagpr-herdr-timeline
 
 on:
@@ -10,6 +12,7 @@ on:
       - 'herdr-timeline/**'
       - '!**/docs/**'
       - '!**/*.md'
+      - 'herdr-timeline/CHANGELOG.md'
 
 permissions:
   contents: read
