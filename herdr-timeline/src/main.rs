@@ -617,7 +617,7 @@ fn main() {
     if o.json {
         println!(
             "{}",
-            json::document(&snap, t, &dirs, &mut Briefs::default())
+            json::document(&env, &snap, t, &dirs, &mut Briefs::default())
         );
         return;
     }

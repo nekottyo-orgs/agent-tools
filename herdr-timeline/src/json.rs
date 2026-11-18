@@ -2,19 +2,62 @@
 // socket・transcript のパス・session_id は出さない。
 
 use crate::core::Pane;
-use crate::data::{find_transcript, mine, read_msgs, Briefs, InMsg, PaneKind, PaneRow, Snapshot};
+use crate::data::{
+    find_transcript, mine, read_msgs, run_herdr, Briefs, Env, InMsg, PaneKind, PaneRow, Snapshot,
+};
 use crate::text::clean;
 use crate::watchers;
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// 画面の末尾に出ていたら anomaly とみなす文字列。足すときはここに 1 行足す (部分一致、先頭側が優先)
+const ANOMALY_PATTERNS: &[&str] = &["Reconnect failed"];
+
+/// anomaly を探す末尾の行数
+const ANOMALY_LINES: &str = "20";
+
+/// 画面の文字列のうち、一覧のどれかを含む最初の要素。出力には画面の文字列を混ぜず、この要素だけを使う
+fn match_anomaly(screen: &str) -> Option<&'static str> {
+    ANOMALY_PATTERNS
+        .iter()
+        .copied()
+        .find(|a| screen.contains(a))
+}
+
+/// working / blocked の pane だけ画面の末尾を読む。読めない (pane read の失敗) ときは null で、warnings には積まない
+/// (anomaly の有無は画面が読めたときにしか分からず、pane 単位の失敗を warnings に積むと 1 回の --json で数が膨らむため)
+fn anomaly(env: &Env, p: &PaneRow) -> Option<&'static str> {
+    if p.status != "working" && p.status != "blocked" {
+        return None;
+    }
+    let args = ["pane", "read", p.pane.as_str(), "--lines", ANOMALY_LINES];
+    let out = run_herdr(env, &args, Some(Path::new(&p.socket))).ok()?;
+    match_anomaly(&String::from_utf8_lossy(&out))
+}
 
 /// {"panes": [...], "warnings": [...], "watchers": [...]}。warnings は一覧取得 (pane / workspace / tab) の失敗で panes が欠けることがあるので必要
-pub fn document(snap: &Snapshot, now: i64, dirs: &[PathBuf], briefs: &mut Briefs) -> Value {
+pub fn document(
+    env: &Env,
+    snap: &Snapshot,
+    now: i64,
+    dirs: &[PathBuf],
+    briefs: &mut Briefs,
+) -> Value {
     let msgs = read_msgs(&snap.files, false);
+    // pane read は pane ごとに子プロセスを待つので、遅くならないよう pane 数ぶん並列に呼ぶ
+    let anomalies: Vec<Option<&'static str>> = std::thread::scope(|s| {
+        let hs: Vec<_> = snap
+            .panes
+            .iter()
+            .map(|p| s.spawn(move || anomaly(env, p)))
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap_or(None)).collect()
+    });
     let panes: Vec<Value> = snap
         .panes
         .iter()
-        .map(|p| pane_json(p, &msgs, now, dirs, briefs))
+        .zip(anomalies)
+        .map(|(p, a)| pane_json(p, &msgs, now, dirs, briefs, a))
         .collect();
     let watchers = watchers::list(&panes);
     json!({"panes": panes, "warnings": snap.warn, "watchers": watchers})
@@ -26,6 +69,7 @@ fn pane_json(
     now: i64,
     dirs: &[PathBuf],
     briefs: &mut Briefs,
+    anomaly: Option<&str>,
 ) -> Value {
     let label = clean(&p.label);
     let track = find_transcript(dirs, p.sid.as_deref()).and_then(|t| briefs.scan(&t));
@@ -65,5 +109,47 @@ fn pane_json(
             _ => "dispatch",
         }),
         "owner": owner,
+        "anomaly": anomaly,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 一覧の要素そのものを返す() {
+        assert_eq!(
+            match_anomaly("x\nReconnect failed (3)\n"),
+            Some("Reconnect failed")
+        );
+    }
+
+    #[test]
+    fn 含まなければ_none() {
+        assert_eq!(match_anomaly("all good"), None);
+    }
+
+    #[test]
+    fn working_と_blocked_以外は読まない() {
+        // env が不正でも、読みに行かなければ None のまま返る
+        let env = Env::from_env(None, false, false);
+        for st in ["done", "idle", "unknown"] {
+            let row = PaneRow {
+                key: String::new(),
+                pane: "wA:p1".into(),
+                tag: String::new(),
+                status: st.into(),
+                name: String::new(),
+                title: String::new(),
+                label: String::new(),
+                kind: None,
+                sid: None,
+                tab_id: None,
+                ws: (String::new(), String::new()),
+                socket: String::new(),
+            };
+            assert_eq!(anomaly(&env, &row), None);
+        }
+    }
 }

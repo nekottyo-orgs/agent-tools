@@ -60,7 +60,7 @@ impl Fx {
         fx.write("herdr/tabs.json", &tabs.to_string());
         fx.write(
             "herdr/herdr.sh",
-            "d=$(dirname \"$0\")\ncase \"$1 $2\" in\n  'pane list') cat \"$d/panes.json\" ;;\n  'workspace list') cat \"$d/workspaces.json\" ;;\n  'tab list') cat \"$d/tabs.json\" ;;\n  *) exit 1 ;;\nesac\n",
+            "d=$(dirname \"$0\")\ncase \"$1 $2\" in\n  'pane list') cat \"$d/panes.json\" ;;\n  'workspace list') cat \"$d/workspaces.json\" ;;\n  'tab list') cat \"$d/tabs.json\" ;;\n  'pane read') echo \"$3\" >> \"$d/reads.log\"; echo \"$4 $5\" >> \"$d/reads.args\"; [ -f \"$d/screen-$3\" ] && tail -n \"$5\" \"$d/screen-$3\" ;;\n  *) exit 1 ;;\nesac\n",
         );
         fs::create_dir_all(fx.dir.join("projects/proj")).unwrap();
         fx.write("runs/r1/run.md", "# run\norchestrator_pane: wA:p2\n");
@@ -1043,6 +1043,90 @@ fn json_warns_when_pane_list_fails() {
     assert!(
         !v["warnings"].as_array().unwrap().is_empty(),
         "失敗は warnings に出るはず: {v}"
+    );
+}
+
+// anomaly。fake の pane read は screen-<pane id> の末尾 --lines 行を返し、呼び出しを reads.log / reads.args に残す
+fn anomaly_of(v: &serde_json::Value, id: &str) -> serde_json::Value {
+    let ps = v["panes"].as_array().unwrap();
+    ps.iter().find(|p| p["pane_id"] == id).unwrap()["anomaly"].clone()
+}
+
+fn screen_with(at_line: usize, total: usize) -> String {
+    (1..=total)
+        .map(|i| {
+            if i == at_line {
+                "Reconnect failed (3)".to_string()
+            } else {
+                format!("line {i}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+#[test]
+fn json_anomaly_matches_within_last_20_lines() {
+    let fx = Fx::new("json-anomaly");
+    // 末尾 20 行の中 (30 行中の 15 行目は外、25 行目は中)
+    fx.write("herdr/screen-wA:p2", &screen_with(25, 30));
+    fx.write("herdr/screen-wA:p1", &screen_with(10, 30));
+    let v = json_of(&fx.run(&["--json"]));
+    assert_eq!(anomaly_of(&v, "wA:p2"), "Reconnect failed", "{v}");
+    assert!(
+        anomaly_of(&v, "wA:p1").is_null(),
+        "末尾 20 行の外は null: {v}"
+    );
+    // herdr へ --lines 20 を渡している
+    let args = fs::read_to_string(fx.path("herdr/reads.args")).unwrap();
+    assert!(args.lines().all(|l| l == "--lines 20"), "{args}");
+}
+
+#[test]
+fn json_anomaly_reads_only_working_and_blocked() {
+    let fx = Fx::new("json-anomaly-status");
+    for id in ["wA:p1", "wA:p2", "wA:p3", "wB:p1"] {
+        fx.write(&format!("herdr/screen-{id}"), "Reconnect failed\n");
+    }
+    let v = json_of(&fx.run(&["--json"]));
+    assert_eq!(
+        anomaly_of(&v, "wA:p1"),
+        "Reconnect failed",
+        "blocked は読む: {v}"
+    );
+    assert_eq!(anomaly_of(&v, "wA:p2"), "Reconnect failed", "{v}");
+    assert!(anomaly_of(&v, "wA:p3").is_null(), "idle は null: {v}");
+    assert!(anomaly_of(&v, "wB:p1").is_null(), "done は null: {v}");
+    let mut reads: Vec<String> = fs::read_to_string(fx.path("herdr/reads.log"))
+        .unwrap()
+        .lines()
+        .map(String::from)
+        .collect();
+    reads.sort();
+    assert_eq!(
+        reads,
+        ["wA:p1", "wA:p2"],
+        "done / idle には pane read を呼ばないはず"
+    );
+}
+
+#[test]
+fn json_anomaly_null_without_match_or_when_read_fails() {
+    let fx = Fx::new("json-anomaly-none");
+    // wA:p1 は一致なし、wA:p2 は screen が無く fake の pane read が失敗する
+    fx.write("herdr/screen-wA:p1", "all good\n");
+    let o = fx.run(&["--json"]);
+    assert!(
+        o.status.success(),
+        "pane read が失敗しても全体は成功するはず"
+    );
+    let v = json_of(&o);
+    assert!(anomaly_of(&v, "wA:p1").is_null(), "{v}");
+    assert!(anomaly_of(&v, "wA:p2").is_null(), "{v}");
+    assert!(
+        v["warnings"].as_array().unwrap().is_empty(),
+        "warnings には積まない: {v}"
     );
 }
 
