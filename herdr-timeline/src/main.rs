@@ -4,7 +4,7 @@
 //
 // 安全設計 (why):
 //   - 読むだけ。書き込むのは herdr tab focus (Enter) だけで、pane には入力しない。サーバも立てない
-//   - transcript の全体は展開した pane と --timeline の pane だけ読む (1 件のキャッシュ)。全 pane の行の
+//   - transcript の全体は選択した pane と --timeline の pane だけ読む (1 件のキャッシュ)。全 pane の行の
 //     ゴールは、transcript が追記だけであることを使って前回の位置から後ろだけを読む (data::Briefs)。
 //     working の transcript は周期ごとに変わるので、全体を読み直すと毎回すべてを解析し直すことになる
 //   - 外部入力 (transcript・inbox・label・title) は端末に出す前に制御文字を落とす (text::clean)
@@ -27,7 +27,10 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
-use view::{layout, paint, step_line, timeline_lines, Order, Row, View};
+use view::{
+    compose, layout, paint, split, step_line, timeline_lines, timeline_panel, Order, Row, Split,
+    View,
+};
 
 const USAGE: &str = "使い方: herdr-timeline [--once] [--interval N] [--width N] [--timeline PANE_ID] [--runs-dir DIR] [--show-resident] [-h|--help]";
 
@@ -46,15 +49,16 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
   -h, --help         この説明を出す
 
 読み取り範囲:
-  herdr の pane / tab / workspace の一覧、Claude Code の transcript (全 pane は追記ぶんだけ、Timeline は展開した pane の全体)、
+  herdr の pane / tab / workspace の一覧、Claude Code の transcript (全 pane は追記ぶんだけ、Timeline は選択した pane の全体)、
   run の run.md と inbox の new・cur の *.msg、brief を読む。書き込まない
   (Enter の herdr tab focus を除く)。サーバを立てない。外部入力の制御文字は落としてから表示する
 
 キー:
   ↑↓ / j k  要対応と作業中の行を選ぶ
   Enter     選んだ行の tab へ移動する (herdr tab focus)
-  t         選んだ行の Timeline を開閉する
-  q         終了する (Ctrl-C でも端末を戻して終わる)
+  Esc / q   終了する (Ctrl-C でも端末を戻して終わる)
+
+選んだ行の Timeline は一覧と一緒に常に出す (幅 120 以上は右、未満は下)。
 
 環境変数:
   HERDR_TIMELINE_HERDR      herdr コマンド (既定 herdr、空白区切りで分割)
@@ -62,6 +66,7 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
   HERDR_TIMELINE_PROJECTS   transcript の projects ディレクトリ (既定 ~/.claude/projects)
   HERDR_TIMELINE_RUNS_DIR   --runs-dir と同じ
   HERDR_SOCKET_PATH         今の session の socket
+  HERDR_TIMELINE_CALLER     呼び出し元の pane id。要対応か作業中ならその行を最初に選ぶ
   NO_COLOR / FORCE_COLOR    色を消す / tty でなくても色を付ける
 
 終了コード:
@@ -284,11 +289,27 @@ impl Drop for Term {
 }
 
 /// 端末のキー入力。矢印は ESC で始まる列で届き read が途中で切れることもあるので、ESC 後の状態を
-/// 読み取りをまたいで持つ (タイムアウトで ESC 単独を見分けない)。列の途中の文字は j / k / Enter として扱わない
+/// 読み取りをまたいで持つ。ESC 単独は呼び出し側が短い待ちで続きが無いと見て flush で取り出す。
+/// 列の途中の文字は j / k / Enter として扱わない
 #[derive(Default)]
 struct KeyParser(u8); // 0 = 通常、1 = ESC の後、2 = CSI、3 = SS3
 
 impl KeyParser {
+    /// ESC の直後で続きを待っているか
+    fn pending(&self) -> bool {
+        self.0 == 1
+    }
+
+    /// 続きが来なかった ESC を ESC 単独として出す
+    fn flush(&mut self) -> Vec<&'static str> {
+        if self.pending() {
+            self.0 = 0;
+            vec!["esc"]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn feed(&mut self, data: &[u8]) -> Vec<&'static str> {
         let mut out = Vec::new();
         for &b in data {
@@ -298,7 +319,6 @@ impl KeyParser {
                     b'\r' | b'\n' => out.push("enter"),
                     b'k' => out.push("up"),
                     b'j' => out.push("down"),
-                    b't' => out.push("t"),
                     b'q' => out.push("q"),
                     _ => {}
                 },
@@ -332,7 +352,7 @@ fn focus_tab(env: &Env, tab: &str) -> String {
     }
 }
 
-/// 展開中の pane の Timeline。キャッシュが効くので周期ごとに作り直してよい
+/// 選択中の pane の Timeline。キャッシュが効くので選択が変わるたびに取り直してよい
 fn expanded(
     snap: &Snapshot,
     key: &Option<String>,
@@ -343,6 +363,16 @@ fn expanded(
     let k = key.as_ref()?;
     let p = snap.panes.iter().find(|p| &p.key == k)?;
     Some((k.clone(), detail(snap, p, cache, briefs, dirs)))
+}
+
+/// 起動時に選ぶ key。呼び出し元の pane が要対応か作業中の行にいるときだけ。畳まれた行は選べないので None
+/// (既定の選択に任せる)。表示の初期値だけで、判定には使わない
+fn initial_select(caller: &str, panes: &[PaneRow], rows: &[Row], own_sock: &str) -> Option<String> {
+    let ok = !caller.is_empty() && caller.len() <= 64 && !caller.chars().any(char::is_control);
+    let p = pick_pane(panes, caller, own_sock).filter(|_| ok)?;
+    rows.iter()
+        .find(|r| r.key == p.key && (r.status == "blocked" || r.status == "working"))
+        .map(|r| r.key.clone())
 }
 
 fn interactive(env: &Env, o: &Opts, color: bool) {
@@ -373,7 +403,7 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
     let mut sel: Option<String> = None;
     let mut prev: Order = Vec::new();
     let mut parser = KeyParser::default();
-    let mut tl_key: Option<String> = None;
+    let mut caller = std::env::var("HERDR_TIMELINE_CALLER").ok();
     let mut notice = String::new();
     let mut stdout = std::io::stdout();
     while !STOP.load(Ordering::SeqCst) {
@@ -381,7 +411,10 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
         let snap = gather(env);
         let dirs = project_dirs(&env.projects);
         let rows = seen.rows(&snap, now(), &dirs, &mut briefs);
-        let mut ex = expanded(&snap, &tl_key, &mut cache, &mut briefs, &dirs);
+        if let Some(c) = caller.take() {
+            sel = initial_select(&c, &snap.panes, &rows, &env.own_sock.to_string_lossy()).or(sel);
+        }
+        let mut ex: Option<(String, Detail)> = None;
         let deadline = Instant::now() + Duration::from_secs(o.interval);
         let mut redraw = true;
         loop {
@@ -391,25 +424,50 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
             if redraw {
                 // 幅も高さも描画のたびに取り直す。pane の大きさを変えたら次の描画から追従する
                 let height = term_size().1.saturating_sub(1).max(2);
+                let width = term_width(o.width);
+                let body_h = height - usize::from(tty);
+                let sp = split(width, body_h);
+                // 並べるときは一覧の幅、積むときは一覧の高さまでに収めて layout する
+                let (list_w, list_h) = match sp {
+                    Split::Side { list_w, .. } => (list_w, body_h),
+                    Split::Stack { list_h, .. } => (width, list_h),
+                };
                 let v = View {
                     rows: &rows,
                     runs: &snap.runs,
                     warn: &snap.warn,
                     names: &snap.names,
                     ws_names: &snap.ws_names,
-                    width: term_width(o.width),
+                    width: list_w,
                     color,
                     select: tty.then_some((sel.clone(), &prev)),
-                    height: Some(height - usize::from(tty)),
+                    height: Some(if tty { list_h } else { body_h }),
                     now: now(),
-                    expanded: ex.as_ref().map(|(k, d)| (k.as_str(), d)),
-                    off: &local_offset,
                 };
                 let (mut lines, order, chosen) = layout(&v);
                 prev = order;
                 sel = chosen;
                 if tty {
-                    let hint = "↑↓ / j k: 選択   Enter: tab へ移動   t: Timeline   q: 終了";
+                    // 選択が変わったら次の描画で detail を取り直す
+                    if ex.as_ref().map(|e| &e.0) != sel.as_ref() {
+                        ex = expanded(&snap, &sel, &mut cache, &mut briefs, &dirs);
+                    }
+                    let tl_w = match sp {
+                        Split::Side { tl_w, .. } => tl_w,
+                        Split::Stack { .. } => width,
+                    };
+                    let tl = timeline_panel(
+                        ex.as_ref().map(|e| &e.1),
+                        tl_w,
+                        color,
+                        now(),
+                        &local_offset,
+                    );
+                    lines = compose(&sp, lines, tl, body_h);
+                    lines.truncate(body_h);
+                }
+                if tty {
+                    let hint = "↑↓ / j k: 選択   Enter: tab へ移動   Esc / q: 終了";
                     lines.push(paint(
                         color,
                         if notice.is_empty() { hint } else { &notice },
@@ -427,8 +485,9 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
             if left.is_zero() {
                 break;
             }
-            // signal の flag を見るため、待ちは 200ms ずつに区切る
-            let wait = left.min(Duration::from_millis(200)).as_millis() as i32;
+            // signal の flag を見るため、待ちは 200ms ずつに区切る。ESC の直後は続きが来るか短く待って見分ける
+            let slice = if parser.pending() { 50 } else { 200 };
+            let wait = left.min(Duration::from_millis(slice)).as_millis() as i32;
             if !tty {
                 std::thread::sleep(Duration::from_millis(wait as u64));
                 continue;
@@ -439,7 +498,11 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
                 revents: 0,
             };
             // SAFETY: 1 要素の pollfd を渡すだけ
-            if unsafe { libc::poll(&mut pfd, 1, wait) } <= 0 {
+            let ready = unsafe { libc::poll(&mut pfd, 1, wait) };
+            if ready == 0 && !parser.flush().is_empty() {
+                return; // ESC 単独
+            }
+            if ready <= 0 {
                 continue;
             }
             let mut buf = [0u8; 64];
@@ -452,7 +515,7 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
             let ids: Vec<String> = prev.iter().map(|x| x.0.clone()).collect();
             for k in parser.feed(&buf[..n as usize]) {
                 match k {
-                    "q" => return,
+                    "q" | "esc" => return,
                     "enter" => {
                         // tab_id が空の行 (別 session) は今の session から移れないので、移らずに理由を出す
                         match sel.as_ref().and_then(|s| prev.iter().find(|x| &x.0 == s)) {
@@ -462,10 +525,6 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
                             Some(x) => notice = focus_tab(env, &x.1),
                             None => {}
                         }
-                    }
-                    "t" if sel.is_some() => {
-                        tl_key = if tl_key == sel { None } else { sel.clone() };
-                        ex = expanded(&snap, &tl_key, &mut cache, &mut briefs, &dirs);
                     }
                     "up" | "down" => {
                         if let Some(i) = sel.as_ref().and_then(|s| ids.iter().position(|x| x == s))
@@ -528,8 +587,6 @@ fn main() {
         select: None,
         height: None,
         now: t,
-        expanded: None,
-        off: &local_offset,
     };
     for l in layout(&v).0 {
         println!("{l}");
@@ -581,6 +638,68 @@ mod tests {
             p.key, "alpha/wA:p1",
             "完全な key なら別 session も選べるはず"
         );
+    }
+
+    fn row_of(key: &str, status: &str) -> Row {
+        Row {
+            key: key.into(),
+            tag: key.into(),
+            status: status.into(),
+            name: String::new(),
+            work: String::new(),
+            since: None,
+            approx: false,
+            tab_id: None,
+            ws: (String::new(), String::new()),
+        }
+    }
+
+    #[test]
+    fn initial_select_picks_only_selectable_caller() {
+        let panes = [
+            pane_row("wA:p1", "wA:p1", "/nonexistent/a.sock"),
+            pane_row("wA:p2", "wA:p2", "/nonexistent/a.sock"),
+            pane_row("wA:p3", "wA:p3", "/nonexistent/a.sock"),
+        ];
+        let rows = [
+            row_of("wA:p1", "blocked"),
+            row_of("wA:p2", "working"),
+            row_of("wA:p3", "done"),
+        ];
+        let sel = |c: &str| initial_select(c, &panes, &rows, "/nonexistent/a.sock");
+        assert_eq!(
+            sel("wA:p1").as_deref(),
+            Some("wA:p1"),
+            "blocked なら選ぶはず"
+        );
+        assert_eq!(
+            sel("wA:p2").as_deref(),
+            Some("wA:p2"),
+            "working なら選ぶはず"
+        );
+        assert_eq!(sel("wA:p3"), None, "done は既定のままのはず");
+        assert_eq!(sel("wZ:p9"), None, "一覧に無い pane は無視するはず");
+        assert_eq!(sel(""), None, "空は無視するはず");
+        assert_eq!(sel("wA:p1\x1b[2J"), None, "制御文字を含む値は無視するはず");
+        assert_eq!(sel(&"w".repeat(65)), None, "長すぎる値は無視するはず");
+    }
+
+    #[test]
+    fn key_parser_flush_distinguishes_lone_esc() {
+        let mut p = KeyParser::default();
+        assert!(p.feed(b"\x1b").is_empty(), "ESC だけでは何も出さないはず");
+        assert_eq!(p.flush(), vec!["esc"], "続きが無ければ ESC 単独になるはず");
+        assert!(p.flush().is_empty(), "flush は 1 回だけのはず");
+        assert_eq!(p.feed(b"\x1b[A"), vec!["up"], "矢印は esc を出さないはず");
+        assert!(p.flush().is_empty(), "列が済めば flush は何も出さないはず");
+        assert!(p.feed(b"\x1b").is_empty());
+        assert!(p.feed(b"[").is_empty());
+        assert_eq!(
+            p.feed(b"A"),
+            vec!["up"],
+            "読み取りをまたいでも esc にならないはず"
+        );
+        assert!(p.flush().is_empty(), "またいだ矢印の後は flush が空のはず");
     }
 
     #[test]

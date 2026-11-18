@@ -11,6 +11,9 @@ const PANE_ID_MAX: usize = 20; // 行末の pane id の列幅の上限。別 ses
 const AGE_W: usize = 4;
 const ALERT_STYLE: &str = "1;31";
 pub const TL_MAX: usize = 8; // Timeline に出す行数の上限 (まとめた後)。残りは「他 N 件」
+pub const SIDE_MIN_WIDTH: usize = 120; // この幅以上なら一覧と Timeline を左右に並べ、未満なら上下に積む
+pub const LIST_W: usize = 70; // 並べるときの一覧の幅。Timeline は残り
+const SEP: &str = " │ "; // 並べるときの区切り (縦線 1 桁と左右の余白)
 
 pub struct Row {
     pub key: String,
@@ -40,8 +43,6 @@ pub struct View<'a> {
     pub select: Option<(Option<String>, &'a Order)>,
     pub height: Option<usize>,
     pub now: i64,
-    pub expanded: Option<(&'a str, &'a Detail)>,
-    pub off: &'a dyn Fn(i64) -> i64,
 }
 
 pub fn paint(color: bool, s: &str, code: &str) -> String {
@@ -125,6 +126,82 @@ pub fn timeline_lines(
         ));
     }
     out
+}
+
+/// 一覧と Timeline の配置
+#[derive(Debug, PartialEq)]
+pub enum Split {
+    Side { list_w: usize, tl_w: usize },
+    Stack { list_h: usize, tl_h: usize },
+}
+
+/// 幅で並べる / 積むを決める。積むときの高さは一覧 6 : Timeline 4 で、どちらも 3 行は確保する
+pub fn split(width: usize, height: usize) -> Split {
+    if width >= SIDE_MIN_WIDTH {
+        return Split::Side {
+            list_w: LIST_W,
+            tl_w: width - LIST_W - width_of(SEP),
+        };
+    }
+    let tl_h = (height * 4 / 10).max(3).min(height.saturating_sub(1));
+    Split::Stack {
+        list_h: height - tl_h,
+        tl_h,
+    }
+}
+
+/// 色の列 (CSI ... m) を除いた表示幅。色付きの行を揃えるため
+fn visible_width(s: &str) -> usize {
+    let (mut w, mut esc) = (0, false);
+    for c in s.chars() {
+        match (esc, c) {
+            (_, '\x1b') => esc = true,
+            (true, 'm') => esc = false,
+            (false, c) => w += crate::text::wide(c),
+            _ => {}
+        }
+    }
+    w
+}
+
+/// 選択行の Timeline の欄。None は選択なし
+pub fn timeline_panel(
+    d: Option<&Detail>,
+    width: usize,
+    color: bool,
+    now: i64,
+    off: &dyn Fn(i64) -> i64,
+) -> Vec<String> {
+    let Some(d) = d else {
+        return vec![paint(color, "選択なし", "2")];
+    };
+    let mut out = vec![paint(color, "■ Timeline", "1")];
+    out.extend(step_line(&d.goal, width).map(|s| paint(color, &s, "2")));
+    if d.events.is_empty() {
+        out.push(paint(color, "イベントが無い", "2"));
+    }
+    out.extend(timeline_lines(&d.events, width, color, 0, now, off));
+    out
+}
+
+/// 一覧と Timeline を 1 つの画面にする。どの行も height 行・width 桁を超えない
+pub fn compose(sp: &Split, list: Vec<String>, tl: Vec<String>, height: usize) -> Vec<String> {
+    match *sp {
+        Split::Side { list_w, tl_w } => (0..list.len().max(tl.len()).min(height))
+            .map(|i| {
+                let l = list.get(i).map_or("", String::as_str);
+                let r = tl.get(i).map_or("", String::as_str);
+                let gap = list_w.saturating_sub(visible_width(l));
+                debug_assert!(visible_width(r) <= tl_w);
+                format!("{l}{}{SEP}{r}", " ".repeat(gap))
+            })
+            .collect(),
+        Split::Stack { list_h, tl_h } => list
+            .into_iter()
+            .take(list_h)
+            .chain(tl.into_iter().take(tl_h))
+            .collect(),
+    }
 }
 
 /// brief に steps があるときだけの step の行
@@ -353,13 +430,6 @@ pub fn layout(v: &View) -> (Vec<String>, Vec<(String, String)>, Option<String>) 
                 lines.push(format!("{blank}{lead}{} {ag}{mid}{tag}", paint(&nm, "1")));
             }
         }
-        if let Some((_, d)) = v.expanded.filter(|(k, _)| *k == x.key) {
-            lines.extend(
-                step_line(&d.goal, v.width.saturating_sub(6))
-                    .map(|s| format!("      {}", paint(&s, "2"))),
-            );
-            lines.extend(timeline_lines(&d.events, v.width, v.color, 6, v.now, v.off));
-        }
         if chosen.as_deref() == Some(x.key.as_str()) {
             keep = Some(blocks.len());
         }
@@ -491,6 +561,68 @@ mod tests {
         }
     }
 
+    fn detail_of(n: usize) -> Detail {
+        Detail {
+            has_transcript: true,
+            events: (0..n).map(|i| ev(1000 - i as i64, Kind::Instr)).collect(),
+            goal: Goal::default(),
+        }
+    }
+
+    #[test]
+    fn split_switches_at_side_min_width() {
+        assert!(
+            matches!(split(119, 30), Split::Stack { .. }),
+            "119 は積むはず"
+        );
+        assert_eq!(
+            split(120, 30),
+            Split::Side {
+                list_w: LIST_W,
+                tl_w: 120 - LIST_W - 3
+            },
+            "120 は並べ、区切りの 3 桁を引くはず"
+        );
+    }
+
+    #[test]
+    fn side_lines_fit_width_even_with_color_and_wide_chars() {
+        let list = vec![paint(true, "日本語の一覧", "1"), "abc".to_string()];
+        let tl = timeline_panel(Some(&detail_of(3)), 47, true, 1000, &|_| 0);
+        let sp = split(120, 30);
+        let out = compose(&sp, list, tl, 30);
+        assert!(
+            out.iter().all(|l| visible_width(l) <= 120),
+            "どの行も端末幅を超えないはず: {out:?}"
+        );
+        assert!(out[0].contains(" │ "), "区切りが出るはず: {out:?}");
+    }
+
+    #[test]
+    fn stack_lines_fit_height() {
+        for h in [2, 5, 10, 24, 40] {
+            let sp = split(80, h);
+            let list: Vec<String> = (0..100).map(|i| format!("l{i}")).collect();
+            let tl = timeline_panel(Some(&detail_of(20)), 80, false, 1000, &|_| 0);
+            assert!(
+                compose(&sp, list, tl, h).len() <= h,
+                "総行数が高さ {h} を超えないはず"
+            );
+        }
+    }
+
+    #[test]
+    fn timeline_panel_follows_selection_and_handles_none() {
+        let a = timeline_panel(Some(&detail_of(1)), 80, false, 1000, &|_| 0).join("\n");
+        let b = timeline_panel(Some(&detail_of(2)), 80, false, 1000, &|_| 0).join("\n");
+        assert_ne!(a, b, "選択が変わると中身も変わるはず");
+        assert_eq!(
+            timeline_panel(None, 80, false, 0, &|_| 0),
+            vec!["選択なし"],
+            "選択なしは 1 行のはず"
+        );
+    }
+
     #[test]
     fn foreign_session_rows_are_selectable_but_have_no_tab() {
         let rows = [
@@ -510,8 +642,6 @@ mod tests {
             select: Some((None, &prev)),
             height: None,
             now: 10,
-            expanded: None,
-            off: &|_| 0,
         };
         let (_, order, _) = layout(&v);
         assert_eq!(
@@ -540,8 +670,6 @@ mod tests {
             select: None,
             height: None,
             now: 10,
-            expanded: None,
-            off: &|_| 0,
         };
         let (lines, _, _) = layout(&v);
         assert!(
@@ -725,8 +853,6 @@ mod tests {
             select: None,
             height: None,
             now: 10,
-            expanded: None,
-            off: &|_| 0,
         };
         let lines = layout(&v).0;
         let blocked = lines.iter().find(|l| l.contains('×')).expect("blocked 行");
@@ -775,8 +901,6 @@ mod tests {
                 select: None,
                 height: None,
                 now: 10,
-                expanded: None,
-                off: &|_| 0,
             };
             layout(&v).0.join("\n")
         };
