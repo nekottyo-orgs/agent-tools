@@ -13,8 +13,8 @@ herdr (端末の multiplexer) の pane を「要対応 / 作業中 / done・idle
 - 読むだけで書き込まない。例外は Enter の `herdr tab focus` だけで、pane には入力しない。サーバを立てない
 - 読むもの
   - herdr の `pane list` / `tab list` / `workspace list` (session ごと)
-  - Claude Code の transcript (`<projects>/<dir>/<session_id>.jsonl`)。全 pane の transcript は、ゴールを出すために前回読んだ位置から追記ぶんだけを読む (brief のパスと最初の時刻だけを拾う)。Timeline は開いた pane と `--timeline` の pane だけ、全体を読む。session_id は英数字と `. _ -` だけ、先頭が `.` でないものしか使わない
-  - run の `run.md` と `inbox/new`・`inbox/cur` の `*.msg` (それ以外のディレクトリは見ない)。pane 行の進捗には、名前 (`<prio>-<micros>-<tag>-<from>-<rand>.msg`) の tag が `progress` のものだけを開く。Timeline を開いた pane には全部を開く
+  - Claude Code の transcript (`<projects>/<dir>/<session_id>.jsonl`)。全 pane の transcript は、ゴールを出すために前回読んだ位置から追記ぶんだけを読む (brief のパスと、最初と最後の入力の時刻だけを拾う)。Timeline は選んだ pane と `--timeline` の pane だけ、全体を読む。session_id は英数字と `. _ -` だけ、先頭が `.` でないものしか使わない
+  - run の `run.md` と `inbox/new`・`inbox/cur` の `*.msg` (それ以外のディレクトリは見ない)。pane 行の進捗には、名前 (`<prio>-<micros>-<tag>-<from>-<rand>.msg`) の tag が `progress` のものだけを開く。Timeline を出す pane には全部を開く
   - transcript の指示が指す brief (`brief-<name>.md`)
 - 外部入力 (transcript と inbox の本文、pane の label と title) は、端末に出す前に CSI 列を丸ごと落とし、残りの制御文字を空白にする
 - 読めないファイルや herdr の失敗では落ちない。イベント 0 件か、画面上部の警告 1 行になる
@@ -45,6 +45,7 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 | `HERDR_TIMELINE_PROJECTS` | transcript の projects ディレクトリ (既定 `~/.claude/projects`) |
 | `HERDR_TIMELINE_RUNS_DIR` | `--runs-dir` と同じ |
 | `HERDR_SOCKET_PATH` | 今の session の socket |
+| `HERDR_TIMELINE_CALLER` | 呼び出し元の pane id。起動時に、その pane が要対応か作業中ならその行を選ぶ (done / idle は畳まれていて選べないので既定のまま)。空や不正な値は無視する。表示の初期値だけ |
 | `NO_COLOR` / `FORCE_COLOR` | 色を消す / tty でなくても色を付ける |
 
 ### 終了コード
@@ -61,10 +62,11 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 | --- | --- |
 | `↑` `↓` / `j` `k` | 要対応と作業中の行を選ぶ |
 | `Enter` | 選んだ行の tab へ移動する (`herdr tab focus`)。別 session の行では移らずに、移れない旨を出す |
-| `t` | 選んだ行の Timeline を開閉する |
-| `q` | 終了する (Ctrl-C でも端末を戻して終わる) |
+| `Esc` / `q` | 終了する (Ctrl-C でも端末を戻して終わる)。Esc は単独で押したときだけ (矢印などの列は終了にならない) |
 
 ## Timeline
+
+選んだ行の Timeline は一覧と一緒に常に出す (`--once` と、stdin が tty でないときは出さない)。選択を変えると中身も追う。端末が 120 桁以上なら一覧を左 (70 桁)、Timeline を右に並べ、未満なら一覧を上、Timeline を下 (高さ 6 : 4) に積む。選択が無いときは「選択なし」を出す。
 
 - 種類は `指示` (人の指示。貼り付けは中身の最初の行)、`from` (`[herdr-message]` で届いた他 pane のメッセージ)、`PR` (URL の初出)、`報告` (inbox)
 - 出さないもの: meta / sidechain / compact summary の行、`<` や `Stop hook feedback:` などで始まる自動の入力。判定は先頭の空白を除いてから行う
