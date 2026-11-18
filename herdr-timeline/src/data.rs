@@ -917,9 +917,12 @@ mod tests {
     #[test]
     fn msg_origin_read_failure_is_err_and_not_cached() {
         let d = tmp("origin-err");
+        // metadata は通るが読むと失敗する対象 (ディレクトリ) で、失敗が cache されないことを見る
         let f = d.join("a.msg");
+        fs::create_dir(&f).unwrap();
         assert!(read_msg_origin(&f).is_err(), "読めない path は Err のはず");
         assert_eq!(msg_origin(&f), None, "読めない間は None のはず");
+        fs::remove_dir(&f).unwrap();
         fs::write(&f, "from: w:p1\nfrom_socket: /s/a\n\n本文\n").unwrap();
         assert_eq!(
             msg_origin(&f).map(|x| x.0),
@@ -937,13 +940,15 @@ mod tests {
     #[test]
     fn msg_origin_keeps_raw_socket() {
         let d = tmp("origin-raw");
+        // canon が入力を変える実在 path を使う (存在しない path だと canon は恒等で区別できない)
+        fs::create_dir(d.join("sub")).unwrap();
+        fs::write(d.join("sock"), "").unwrap();
+        let raw = format!("{}/sub/../sock", d.display());
         let f = d.join("a.msg");
-        fs::write(&f, "from: w:p1\nfrom_socket:  /no/such/../sock \n\n").unwrap();
-        assert_eq!(
-            msg_origin(&f).map(|x| x.1),
-            Some("/no/such/../sock".to_string()),
-            "canon 前の trim 済みの値のはず"
-        );
+        fs::write(&f, format!("from: w:p1\nfrom_socket:  {raw} \n\n")).unwrap();
+        let got = msg_origin(&f).map(|x| x.1);
+        assert_eq!(got, Some(raw.clone()), "canon 前の trim 済みの値のはず");
+        assert_ne!(got, Some(canon(&raw)), "canon 後の値ではないはず");
         let _ = fs::remove_dir_all(&d);
     }
 
