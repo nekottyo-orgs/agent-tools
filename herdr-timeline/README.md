@@ -23,7 +23,7 @@ herdr (端末の multiplexer) の pane を「要対応 / 作業中 / done・idle
 ## 使い方
 
 ```
-herdr-timeline [--once] [--interval N] [--width N] [--timeline PANE_ID] [--runs-dir DIR] [--show-resident] [-h|--help]
+herdr-timeline [--once] [--interval N] [--width N] [--timeline PANE_ID] [--runs-dir DIR] [--show-resident] [--json] [-h|--help]
 ```
 
 | オプション | 意味 |
@@ -34,6 +34,7 @@ herdr-timeline [--once] [--interval N] [--width N] [--timeline PANE_ID] [--runs-
 | `--timeline PANE_ID` | pane の Timeline を 1 回出して終わる (非対話)。`<session>/<pane>` でなく pane id だけを渡したときは、今の session の pane を優先し、無ければ他の session から探す |
 | `--runs-dir DIR` | run のディレクトリ (`DIR/<run>/run.md`、`DIR/<run>/inbox/{new,cur}/*.msg`)。無ければ報告・進捗・未処理の報告を出さないだけで動く |
 | `--show-resident` | 常駐の pane (label が `RESIDENT_LABELS` と完全一致) と dispatch の PR review の pane も一覧に出す。`--timeline` では常に出る |
+| `--json` | 全 pane の状態を JSON 1 つで出して終わる (`--once` を含む)。`--timeline` とは併用できない。常駐・dispatch の pane も `hidden` を付けて全部出す (後述) |
 | `-h`, `--help` | 説明を出す |
 
 run のディレクトリに既定値は無い。取り込み側が `--runs-dir` か環境変数で渡す。
@@ -52,9 +53,9 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 
 | コード | 意味 |
 | --- | --- |
-| 0 | 正常 (`-h`、`--once`・`--timeline` の描画、対話の終了) |
+| 0 | 正常 (`-h`、`--once`・`--json`・`--timeline` の描画、対話の終了) |
 | 1 | `--timeline` の pane が見つからない |
-| 2 | 引数の誤り (値の欠落、値が `-` で始まる、正の整数でない、`--interval` が 86400 を超える、`--width` が 1000 を超える、不明な引数) |
+| 2 | 引数の誤り (値の欠落、値が `-` で始まる、正の整数でない、`--interval` が 86400 を超える、`--width` が 1000 を超える、不明な引数、`--json` と `--timeline` の併用) |
 
 ### キー操作
 
@@ -63,6 +64,33 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 | `↑` `↓` / `j` `k` | 要対応と作業中の行を選ぶ |
 | `Enter` | 選んだ行の tab へ移動する (`herdr tab focus`)。別 session の行では移らずに、移れない旨を出す |
 | `Esc` / `q` | 終了する (Ctrl-C でも端末を戻して終わる)。Esc は単独で押したときだけ (矢印などの列は終了にならない) |
+
+## JSON 出力
+
+`--json` は stdout に JSON のトップレベル object 1 つだけを出す (末尾は改行 1 つ)。判定は画面と同じ関数を通す。
+
+- `panes`: pane の配列。常駐・dispatch の pane も含め、画面で隠すかどうかは `hidden` で示す
+- `warnings`: 警告の配列。herdr の一覧取得 (pane、workspace、tab) に失敗した server があると `panes` が欠けることがあるので、これで気づく
+
+| 項目 | 型 | 意味 |
+| --- | --- | --- |
+| `server` | string か null | socket が複数のときの session 名。1 つだけなら null |
+| `pane_id` | string | session 修飾なしの pane id |
+| `key` | string | server があれば `<server>/<pane_id>`、無ければ `pane_id` (画面の行末の tag と同じ) |
+| `label` | string | herdr の pane label (制御文字は落とし済み) |
+| `status` | string | `blocked` / `working` / `idle` / `done` / `unknown` |
+| `working_secs` | integer か null | working のとき、transcript の最後の入力からの経過秒。起点が transcript から取れない (画面の `≥`) ときは null |
+| `inbox` | object か null | `count` (帰属する msg の件数) と `last_at` (最後の msg の時刻、epoch 秒、無ければ null)。transcript が無い、または最初の時刻が取れない pane は null。run が無いときは `count` 0 |
+| `hidden` | boolean | 画面の既定で隠す pane か。常駐・dispatch で、blocked でないもの。`--show-resident` では変わらない |
+| `hidden_reason` | string か null | `resident` / `dispatch`。hidden でなければ null |
+| `owner` | string か null | 常駐は label が `watch-` で始まるときその label、それ以外は null。dispatch は `<repo略称>#<番号>` (label 末尾の `-bundle` は落とす)。blocked で hidden でない pane も持つ。分類されなければ null |
+
+- dispatch の分類は `--runs-dir` の run が読めるときだけ付く。読めなければ `hidden` は false、`owner` は null
+- socket のパス、transcript のパス、session_id は出さない
+- `--once` との対応 (試験で確かめている)
+  - `hidden` が false で status が blocked か working の pane は、`--once` の個別の行と 1 対 1
+  - `hidden` が false で status が done / idle / unknown の pane の数の合計は、`--once` が畳んだ件数の合計と等しい
+  - 全 pane の集合は `--once --show-resident` の集合と等しい
 
 ## Timeline
 

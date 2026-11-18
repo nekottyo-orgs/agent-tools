@@ -1,6 +1,7 @@
 // 目的: herdr の pane を「要対応 / 作業中 / done・idle」の 3 段で一覧し、選んだ pane の Timeline
 //       (人の指示・他 pane からのメッセージ・PR・inbox の報告) を時刻の降順で出す。
 //       DeepSeek Harness (DSH) の Timeline を参考にした。
+//       --json は全 pane の状態を機械が読める JSON 1 つで出す (常駐・dispatch は hidden 付き)。
 //
 // 安全設計 (why):
 //   - 読むだけ。書き込むのは herdr tab focus (Enter) だけで、pane には入力しない。サーバも立てない
@@ -10,10 +11,11 @@
 //   - 外部入力 (transcript・inbox・label・title) は端末に出す前に制御文字を落とす (text::clean)
 //   - 外部コマンドやファイルの失敗では落とさず、警告 1 行か空にする
 //
-// 終了コード: 0 正常 (-h、--once・--timeline の描画、対話の終了)、1 --timeline の pane が無い、2 引数の誤り
+// 終了コード: 0 正常 (-h、--once・--json・--timeline の描画、対話の終了)、1 --timeline の pane が無い、2 引数の誤り (--json と --timeline の併用を含む)
 
 mod core;
 mod data;
+mod json;
 mod text;
 mod view;
 
@@ -32,11 +34,11 @@ use view::{
     View,
 };
 
-const USAGE: &str = "使い方: herdr-timeline [--once] [--interval N] [--width N] [--timeline PANE_ID] [--runs-dir DIR] [--show-resident] [-h|--help]";
+const USAGE: &str = "使い方: herdr-timeline [--once] [--interval N] [--width N] [--timeline PANE_ID] [--runs-dir DIR] [--show-resident] [--json] [-h|--help]";
 
 const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3 段で一覧し、pane ごとの Timeline を出す。
 
-使い方: herdr-timeline [--once] [--interval N] [--width N] [--timeline PANE_ID] [--runs-dir DIR] [--show-resident] [-h|--help]
+使い方: herdr-timeline [--once] [--interval N] [--width N] [--timeline PANE_ID] [--runs-dir DIR] [--show-resident] [--json] [-h|--help]
 
 オプション:
   --once             1 回描画して終わる
@@ -46,6 +48,8 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
   --runs-dir DIR     run のディレクトリ (DIR/<run>/run.md と DIR/<run>/inbox/{new,cur}/*.msg)。
                      環境変数 HERDR_TIMELINE_RUNS_DIR でも渡せる。無ければ報告・進捗・未処理の報告を出さない
   --show-resident    常駐の pane (watch 系、Cue 専任、review-submit) と監視 skill が起こす PR review の pane は既定で一覧に出さない。これで出す
+  --json             全 pane の状態を JSON 1 つで出して終わる (--once を含む。--timeline とは併用できない)。
+                     常駐・dispatch の pane も hidden 付きで全部出し、hidden は --show-resident で変わらない
   -h, --help         この説明を出す
 
 読み取り範囲:
@@ -70,9 +74,9 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
   NO_COLOR / FORCE_COLOR    色を消す / tty でなくても色を付ける
 
 終了コード:
-  0  正常 (-h、--once・--timeline の描画、対話の終了)
+  0  正常 (-h、--once・--json・--timeline の描画、対話の終了)
   1  --timeline の pane が見つからない
-  2  引数の誤り (--interval が 86400、--width が 1000 を超える場合を含む)
+  2  引数の誤り (--json と --timeline の併用、--interval が 86400、--width が 1000 を超える場合を含む)
 ";
 
 const INTERVAL_MAX: u64 = 86400;
@@ -85,6 +89,7 @@ struct Opts {
     timeline: Option<String>,
     runs: Option<PathBuf>,
     show_resident: bool,
+    json: bool,
 }
 
 /// Ok(None) は -h
@@ -96,6 +101,7 @@ fn parse_args(args: &[String]) -> Result<Option<Opts>, String> {
         timeline: None,
         runs: None,
         show_resident: false,
+        json: false,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -121,8 +127,12 @@ fn parse_args(args: &[String]) -> Result<Option<Opts>, String> {
             "--timeline" => o.timeline = Some(value()?),
             "--runs-dir" => o.runs = Some(PathBuf::from(value()?)),
             "--show-resident" => o.show_resident = true,
+            "--json" => o.json = true,
             _ => return Err(format!("不明な引数 {a}")),
         }
+    }
+    if o.json && o.timeline.is_some() {
+        return Err("--json と --timeline は同時に指定できない".into());
     }
     Ok(Some(o))
 }
@@ -586,24 +596,31 @@ fn main() {
             exit(2);
         }
     };
-    let env = Env::from_env(o.runs.clone(), o.show_resident || o.timeline.is_some());
+    let env = Env::from_env(
+        o.runs.clone(),
+        (o.show_resident && !o.json) || o.timeline.is_some(),
+        o.json,
+    );
     let color = std::env::var_os("NO_COLOR").is_none()
         && (isatty(1) || std::env::var_os("FORCE_COLOR").is_some());
     if let Some(p) = &o.timeline {
         exit(print_timeline(&env, p, term_width(o.width), color));
     }
-    if !o.once {
+    if !o.once && !o.json {
         interactive(&env, &o, color);
         return;
     }
     let snap = gather(&env);
     let t = now();
-    let rows = Seen(HashMap::new()).rows(
-        &snap,
-        t,
-        &project_dirs(&env.projects),
-        &mut Briefs::default(),
-    );
+    let dirs = project_dirs(&env.projects);
+    if o.json {
+        println!(
+            "{}",
+            json::document(&snap, t, &dirs, &mut Briefs::default())
+        );
+        return;
+    }
+    let rows = Seen(HashMap::new()).rows(&snap, t, &dirs, &mut Briefs::default());
     let v = View {
         rows: &rows,
         runs: &snap.runs,
@@ -633,6 +650,8 @@ mod tests {
             status: "working".into(),
             name: String::new(),
             title: String::new(),
+            label: String::new(),
+            kind: None,
             sid: None,
             tab_id: None,
             ws: (String::new(), String::new()),

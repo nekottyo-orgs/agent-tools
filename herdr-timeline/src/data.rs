@@ -41,6 +41,20 @@ pub fn is_dispatched_label(label: &str) -> bool {
     !head.is_empty() && !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// pane の分類。常駐と dispatch の pane は既定の画面から外す (blocked を除く)
+#[derive(Clone, PartialEq, Debug)]
+pub enum PaneKind {
+    Resident,
+    /// `<repo略称>#<PR番号>`
+    Dispatch(String),
+}
+
+/// dispatch の label から `<repo略称>#<番号>`。末尾の -bundle は repo 略称に含めない。is_dispatched_label が真の label だけを渡す
+fn dispatch_ref(label: &str) -> String {
+    let (head, num) = label.rsplit_once('-').unwrap_or((label, ""));
+    format!("{}#{num}", head.strip_suffix("-bundle").unwrap_or(head))
+}
+
 pub struct Env {
     pub herdr: Vec<String>,
     pub herdr_dir: PathBuf,
@@ -48,10 +62,12 @@ pub struct Env {
     pub runs: Option<PathBuf>,
     pub own_sock: PathBuf,
     pub show_resident: bool,
+    /// 真なら hidden な pane も snap.panes に残す (--json)。hidden の値は show_resident に依らない
+    pub keep_hidden: bool,
 }
 
 impl Env {
-    pub fn from_env(runs: Option<PathBuf>, show_resident: bool) -> Env {
+    pub fn from_env(runs: Option<PathBuf>, show_resident: bool, keep_hidden: bool) -> Env {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let home = PathBuf::from(var("HOME").unwrap_or_default());
         let herdr_dir = var("HERDR_TIMELINE_HERDR_DIR")
@@ -73,6 +89,7 @@ impl Env {
             runs: runs.or_else(|| var("HERDR_TIMELINE_RUNS_DIR").map(PathBuf::from)),
             own_sock,
             show_resident,
+            keep_hidden,
         }
     }
 }
@@ -161,10 +178,20 @@ pub struct PaneRow {
     pub status: String,
     pub name: String,
     pub title: String,
+    /// herdr の生の label。出力側で clean する
+    pub label: String,
+    pub kind: Option<PaneKind>,
     pub sid: Option<String>,
     pub tab_id: Option<String>,
     pub ws: (String, String),
     pub socket: String,
+}
+
+impl PaneRow {
+    /// blocked は人の対応待ちなので、常駐・dispatch でも隠さない
+    pub fn hidden(&self) -> bool {
+        self.kind.is_some() && self.status != "blocked"
+    }
 }
 
 pub struct Run {
@@ -217,7 +244,6 @@ pub fn gather(env: &Env) -> Snapshot {
     let mut snap = Snapshot::default();
     let own = canon(&env.own_sock.to_string_lossy());
     let mut dup = Vec::new();
-    let mut pane_labels: HashMap<String, String> = HashMap::new();
     for (name, sock) in sessions(env) {
         let socket = sock
             .as_ref()
@@ -319,15 +345,18 @@ pub fn gather(env: &Env) -> Snapshot {
                 .get("agent_session")
                 .map(|a| s(a, "value"))
                 .filter(|v| !v.is_empty());
-            // blocked は人の対応待ちなので、常駐でも隠さない
-            if !env.show_resident
-                && is_resident(&s(p, "label"))
-                && status_of(&s(p, "agent_status")) != "blocked"
-            {
-                continue; // 名前の引き当て (snap.names) は上で済ませてあるので残る
-            }
-            pane_labels.insert(tag.clone(), s(p, "label"));
+            let label = s(p, "label");
+            // dispatch は台帳 (run) を読んでから確定する。ここでは label の形だけで仮に付ける
+            let kind = if is_resident(&label) {
+                Some(PaneKind::Resident)
+            } else if is_dispatched_label(&label) {
+                Some(PaneKind::Dispatch(dispatch_ref(&label)))
+            } else {
+                None
+            };
             snap.panes.push(PaneRow {
+                label,
+                kind,
                 key: tag.clone(),
                 tag,
                 status: status_of(&s(p, "agent_status")).to_string(),
@@ -353,23 +382,26 @@ pub fn gather(env: &Env) -> Snapshot {
         .sort_by(|a, b| a.pane.cmp(&b.pane).then(a.key.cmp(&b.key)));
     if let Some(runs) = &env.runs {
         read_runs(runs, &mut snap);
-        if !env.show_resident {
-            hide_dispatched(&mut snap, &pane_labels);
-        }
+    }
+    mark_dispatched(&mut snap);
+    // 隠した pane の名前は上で snap.names に入れてあるので残る
+    if !env.keep_hidden && !env.show_resident {
+        snap.panes.retain(|r| !r.hidden());
     }
     snap
 }
 
-/// dispatch の pane (label の形が合い、run の台帳に属さず、blocked でない) を一覧から外す。
+/// dispatch の仮の分類 (label の形が合う pane) を、run の台帳に属さないものだけ残して確定する。
 /// 台帳に属すとは、run の inbox の msg が pane id と socket で帰属するか、run.md の orchestrator_pane であること。
 /// since は transcript 無しでも判定したいので下限なしにする
-fn hide_dispatched(snap: &mut Snapshot, labels: &HashMap<String, String>) {
-    let candidate = |r: &PaneRow| {
-        labels.get(&r.key).is_some_and(|l| is_dispatched_label(l)) && r.status != "blocked"
-    };
-    // run が読めない (--runs-dir 不達・run 無し) ときは台帳を判定できないので外さない。
-    // 外す候補が無ければ inbox 全体を parse しない
-    if snap.runs.is_empty() || !snap.panes.iter().any(candidate) {
+fn mark_dispatched(snap: &mut Snapshot) {
+    let is_dispatch = |r: &PaneRow| matches!(r.kind, Some(PaneKind::Dispatch(_)));
+    // run が読めない (--runs-dir 不達・run 無し) ときは台帳を判定できないので付けない。
+    // 候補が無ければ inbox 全体を parse しない
+    if snap.runs.is_empty() || !snap.panes.iter().any(is_dispatch) {
+        for r in snap.panes.iter_mut().filter(|r| is_dispatch(r)) {
+            r.kind = None;
+        }
         return;
     }
     // 本文は要らないので、ヘッダの (from, from_socket) だけを cache 越しに引く
@@ -379,23 +411,20 @@ fn hide_dispatched(snap: &mut Snapshot, labels: &HashMap<String, String>) {
         .filter_map(|(_, p)| msg_origin(p))
         .map(|(f, s)| (f, canon(&s))) // cache は生の値。socket が後から実在しても合うよう毎周期 canon する
         .collect();
-    let in_ledger = |r: &PaneRow| {
+    let runs = &snap.runs;
+    for r in snap.panes.iter_mut().filter(|r| is_dispatch(r)) {
         // since は見ず pane id と socket の一致だけで判定するので、古い msg が残っていても
-        // 台帳に属すとみなして外さない (安全側)
-        snap.runs.iter().any(|x| {
+        // 台帳に属すとみなして付けない (安全側)
+        let in_ledger = runs.iter().any(|x| {
             x.orch == r.pane
                 && x.orch_socket
                     .as_deref()
                     .is_none_or(|s| canon(s) == canon(&r.socket))
-        }) || origins.contains(&(r.pane.clone(), canon(&r.socket)))
-    };
-    let drop: Vec<String> = snap
-        .panes
-        .iter()
-        .filter(|r| candidate(r) && !in_ledger(r))
-        .map(|r| r.key.clone())
-        .collect();
-    snap.panes.retain(|r| !drop.contains(&r.key));
+        }) || origins.contains(&(r.pane.clone(), canon(&r.socket)));
+        if in_ledger {
+            r.kind = None;
+        }
+    }
 }
 
 type OriginCache = HashMap<PathBuf, (SystemTime, u64, Option<(String, String)>)>;
@@ -533,7 +562,7 @@ pub fn read_msgs(files: &[(String, PathBuf)], only_progress: bool) -> Vec<InMsg>
 }
 
 /// pane に帰属した msg をファイル名順に。位置が seq になるので readdir の順に依らせない
-fn mine<'a>(msgs: &'a [InMsg], p: &core::Pane) -> Vec<&'a InMsg> {
+pub fn mine<'a>(msgs: &'a [InMsg], p: &core::Pane) -> Vec<&'a InMsg> {
     let mut v: Vec<&InMsg> = msgs.iter().filter(|m| attributed(p, &m.msg)).collect();
     v.sort_by(|a, b| (&a.file, &a.path).cmp(&(&b.file, &b.path)));
     v
@@ -1228,6 +1257,8 @@ mod tests {
             status: "working".into(),
             name: String::new(),
             title: String::new(),
+            label: String::new(),
+            kind: None,
             sid: Some("sess1".into()),
             tab_id: None,
             ws: (String::new(), String::new()),
