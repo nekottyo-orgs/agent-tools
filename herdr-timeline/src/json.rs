@@ -4,10 +4,11 @@
 use crate::core::Pane;
 use crate::data::{find_transcript, mine, read_msgs, Briefs, InMsg, PaneKind, PaneRow, Snapshot};
 use crate::text::clean;
+use crate::watchers;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-/// {"panes": [...], "warnings": [...]}。warnings は一覧取得 (pane / workspace / tab) の失敗で panes が欠けることがあるので必要
+/// {"panes": [...], "warnings": [...], "watchers": [...]}。warnings は一覧取得 (pane / workspace / tab) の失敗で panes が欠けることがあるので必要
 pub fn document(snap: &Snapshot, now: i64, dirs: &[PathBuf], briefs: &mut Briefs) -> Value {
     let msgs = read_msgs(&snap.files, false);
     let panes: Vec<Value> = snap
@@ -15,7 +16,8 @@ pub fn document(snap: &Snapshot, now: i64, dirs: &[PathBuf], briefs: &mut Briefs
         .iter()
         .map(|p| pane_json(p, &msgs, now, dirs, briefs))
         .collect();
-    json!({"panes": panes, "warnings": snap.warn})
+    let watchers = watchers::list(&panes);
+    json!({"panes": panes, "warnings": snap.warn, "watchers": watchers})
 }
 
 fn pane_json(

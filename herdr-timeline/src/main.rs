@@ -18,6 +18,7 @@ mod data;
 mod json;
 mod text;
 mod view;
+mod watchers;
 
 use data::{
     canon, detail, gather, project_dirs, read_msgs, run_herdr, summary, transcript_mtime, Briefs,
