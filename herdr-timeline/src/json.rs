@@ -32,7 +32,8 @@ fn pane_json(
         .as_ref()
         .and_then(|t| t.last_turn_ts)
         .filter(|_| p.status == "working")
-        .map(|t| now - t);
+        // now の取得後に transcript を読むので、その間の入力で起点が now を越えうる。負にしない
+        .map(|t| (now - t).max(0));
     // transcript が無い、または最初の時刻が取れない pane は帰属を判定できないので null (0 件と区別する)
     let inbox = track.and_then(|t| t.first_ts).map(|since| {
         let pane = Pane {
