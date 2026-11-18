@@ -4,7 +4,7 @@ changelog:
       # tagpr が release PR に付ける label。release PR を notes に載せない
       - tagpr
   categories:
-    # この tool の label が付いた PR だけを載せる (label は .github/labeler.yml が path から付ける)
+    # この tool の label が付いた PR だけを載せる (label は .github/workflows/labeler.yml が path から付ける)
     - title: Changes
       labels:
         - secret-scan

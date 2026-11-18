@@ -1,6 +1,7 @@
-# PR が触った tool の path から label を付ける (設定は .github/labeler.yml)。
-# release notes はこの label で tool ごとに絞る。
-# pull_request_target は PR の code を checkout しない。設定は base 側のものを読むので、fork の PR でも label が付く。
+# PR が触った path から tool の label を付ける。release notes は label で tool ごとに絞る (各 tool の .github/release.yml)。
+# 外部 action は使わず、runner に入っている gh だけで付ける。
+# pull_request_target は PR の code を checkout しない。fork の PR でも label を付けるために使う。
+# path は gh の出力を比較に使うだけで、shell には渡さない。
 name: labeler
 
 on:
@@ -15,6 +16,15 @@ jobs:
   label:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/labeler@v7.0.0
-        with:
-          sync-labels: true
+      - name: Add tool labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          files=$(gh pr diff "$PR_NUMBER" --name-only)
+          for tool in bash-gates secret-scan herdr-timeline; do
+            if grep -q "^$tool/" <<<"$files"; then
+              gh pr edit "$PR_NUMBER" --add-label "$tool"
+            fi
+          done
