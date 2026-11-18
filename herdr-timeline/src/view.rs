@@ -13,6 +13,8 @@ const ALERT_STYLE: &str = "1;31";
 pub const TL_MAX: usize = 8; // Timeline に出す行数の上限 (まとめた後)。残りは「他 N 件」
 /// 並べたときに Timeline に最低限残す桁数。これに満たない描画幅では積む
 const TL_MIN_W: usize = 20;
+/// Timeline 列の幅の上限。超える分は右の余白
+const TL_COL_MAX: usize = 120;
 
 pub const SIDE_MIN_WIDTH: usize = 120; // この幅以上なら一覧と Timeline を左右に並べ、未満なら上下に積む
 pub const LIST_W: usize = 70; // 並べるときの一覧の幅。Timeline は残り
@@ -98,6 +100,7 @@ pub fn timeline_lines(
     now: i64,
     off: &dyn Fn(i64) -> i64,
 ) -> Vec<String> {
+    let width = width.min(TL_COL_MAX);
     let groups = group(events);
     let shown = &groups[..groups.len().min(TL_MAX)];
     let sp = " ".repeat(indent);
@@ -145,7 +148,7 @@ pub fn split(phys: usize, width: usize, height: usize) -> Split {
     if phys >= SIDE_MIN_WIDTH && width >= LIST_W + width_of(SEP) + TL_MIN_W {
         return Split::Side {
             list_w: LIST_W,
-            tl_w: width.saturating_sub(LIST_W + width_of(SEP)),
+            tl_w: width.saturating_sub(LIST_W + width_of(SEP)).min(TL_COL_MAX),
         };
     }
     let tl_h = (height * 4 / 10).max(3).min(height.saturating_sub(1));
@@ -624,6 +627,57 @@ mod tests {
                 tl_w: 119 - LIST_W - 3
             },
             "120 は並べ、区切りの 3 桁を引くはず"
+        );
+    }
+
+    #[test]
+    fn split_caps_timeline_column() {
+        assert_eq!(
+            split(400, 399, 30),
+            Split::Side {
+                list_w: LIST_W,
+                tl_w: TL_COL_MAX
+            },
+            "広い端末でも Timeline 列は上限までのはず"
+        );
+    }
+
+    fn long_ev() -> Event {
+        Event {
+            body: "x".repeat(300),
+            ..ev(1000, Kind::Instr)
+        }
+    }
+
+    #[test]
+    fn timeline_body_grows_to_column_width() {
+        let out = timeline_lines(&[long_ev()], 200, false, 0, 1000, &|_| 0);
+        let w = visible_width(&out[0]);
+        assert_eq!(w, TL_COL_MAX, "本文が列幅の上限まで出るはず: {out:?}");
+    }
+
+    #[test]
+    fn timeline_lines_never_exceed_column_max() {
+        for width in [60, 120, 200, 400] {
+            let out = timeline_lines(&[long_ev()], width, true, 1, 1000, &|_| 0);
+            assert!(
+                out.iter()
+                    .all(|l| visible_width(l) <= TL_COL_MAX.min(width)),
+                "幅 {width} で上限を超えないはず: {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn timeline_body_clips_at_avail_when_narrow() {
+        let out = timeline_lines(&[long_ev()], 30, false, 0, 1000, &|_| 0);
+        assert!(
+            visible_width(&out[0]) <= 30,
+            "狭い幅では avail で切れるはず: {out:?}"
+        );
+        assert!(
+            out[0].contains('…') || out[0].contains("..."),
+            "切れた印が出るはず: {out:?}"
         );
     }
 

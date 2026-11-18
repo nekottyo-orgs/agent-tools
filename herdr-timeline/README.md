@@ -66,7 +66,7 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 
 ## Timeline
 
-選んだ行の Timeline は一覧と一緒に常に出す (`--once` と、stdin が tty でないときは出さない)。選択を変えると中身も追う。端末が 120 桁以上なら一覧を左 (70 桁)、Timeline を右に並べ、未満なら一覧を上、Timeline を下 (高さ 6 : 4) に積む。選択が無いときは「選択なし」を出す。
+選んだ行の Timeline は一覧と一緒に常に出す (`--once` と、stdin が tty でないときは出さない)。選択を変えると中身も追う。端末が 120 桁以上なら一覧を左 (70 桁)、Timeline を右に並べ (Timeline の幅は 120 桁まで、超える分は余白)、未満なら一覧を上、Timeline を下 (高さ 6 : 4) に積む。Timeline の行は積む配置と `--timeline PANE_ID` の 1 回出力でも 120 桁までで、`--width` を広く固定しても超えない。選択が無いときは「選択なし」を出す。
 
 - 種類は `指示` (人の指示。貼り付けは中身の最初の行)、`from` (`[herdr-message]` で届いた他 pane のメッセージ)、`PR` (URL の初出)、`報告` (inbox)
 - 出さないもの: meta / sidechain / compact summary の行、`<` や `Stop hook feedback:` などで始まる自動の入力。判定は先頭の空白を除いてから行う
