@@ -624,16 +624,21 @@ fn instr_brief(l: &Line) -> Option<(i64, Option<String>)> {
 }
 
 /// 新しい turn の始まり。tool result (content が配列) と compact の要約・meta・sidechain・skip 対象は数えない。
-/// auto-handover の「続けて」は通常の入力として届くので数える (実 transcript で確認)
+/// auto-handover の「続けて」は通常の入力として届くので数える (実 transcript で確認)。
+/// スラッシュコマンド (content が <command-name> / <command-message> で始まる) は人が始めた turn だが
+/// classify は Skip にするので別に数える。task-notification と Stop hook の再開は起点かどうか決まらないので数えない
 fn is_turn(l: &Line) -> bool {
     if l.typ != "user" || core::excluded(l) {
         return false;
     }
     l.content.as_deref().is_some_and(|c| {
-        matches!(
-            core::classify(c),
-            Class::Instr | Class::Paste | Class::HerdrMsg
-        )
+        let t = core::trim_left(c);
+        t.starts_with("<command-name>")
+            || t.starts_with("<command-message>")
+            || matches!(
+                core::classify(c),
+                Class::Instr | Class::Paste | Class::HerdrMsg
+            )
     })
 }
 
@@ -767,7 +772,7 @@ impl Briefs {
         }
     }
 
-    /// working の経過の起点。transcript の最後の turn の時刻。読めない・turn が無いときは None
+    /// working の経過の起点。transcript の最後の turn の時刻。読めない、または turn が無いときは None
     pub fn turn_start(&mut self, row: &PaneRow, dirs: &[PathBuf]) -> Option<i64> {
         let p = find_transcript(dirs, row.sid.as_deref())?;
         self.scan(&p)?.last_turn_ts
@@ -790,7 +795,7 @@ impl Briefs {
     }
 }
 
-/// 展開した pane の Timeline・ゴール・進捗
+/// 選択した pane の Timeline・ゴール・進捗
 #[derive(Default)]
 pub struct Detail {
     pub has_transcript: bool,
@@ -1049,6 +1054,40 @@ mod tests {
             b.scan(&f).unwrap().last_turn_ts,
             parse_time("2026-01-02T03:20:00Z"),
             "「続けて」は新しい turn のはず"
+        );
+        // スラッシュコマンドも新しい turn。task-notification は起点にしない
+        let t1 = parse_time("2026-01-02T03:30:00Z");
+        let l = user(
+            "2026-01-02T03:30:00Z",
+            r#""<command-message>front-desk</command-message>\n<command-name>/front-desk</command-name>""#,
+            "",
+        );
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&f)
+            .unwrap()
+            .write_all(l.as_bytes())
+            .unwrap();
+        assert_eq!(
+            b.scan(&f).unwrap().last_turn_ts,
+            t1,
+            "スラッシュコマンドは新しい turn のはず"
+        );
+        let l = user(
+            "2026-01-02T03:40:00Z",
+            r#""<task-notification>x</task-notification>""#,
+            "",
+        );
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&f)
+            .unwrap()
+            .write_all(l.as_bytes())
+            .unwrap();
+        assert_eq!(
+            b.scan(&f).unwrap().last_turn_ts,
+            t1,
+            "task-notification は turn の起点にならないはず"
         );
         let _ = fs::remove_dir_all(&d);
     }

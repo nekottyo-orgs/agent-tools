@@ -176,8 +176,8 @@ fn width_for(fixed: Option<usize>, cols: usize) -> usize {
 }
 
 /// 経過の起点。herdr は状態の開始時刻を返さないので、blocked は transcript の最終書き込み
-/// (止まった時刻に近い)、working は transcript の最後の turn の時刻。transcript が読めないときだけ
-/// viewer が working を見始めた時刻 (≥ を付ける)
+/// (止まった時刻に近い)、working は transcript の最後の turn の時刻。transcript が読めない、
+/// または turn が無いときだけ viewer が working を見始めた時刻 (≥ を付ける)
 struct Seen(HashMap<String, (String, i64)>);
 
 impl Seen {

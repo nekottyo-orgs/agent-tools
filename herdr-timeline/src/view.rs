@@ -25,7 +25,7 @@ pub struct Row {
     pub name: String,
     pub work: String,
     pub since: Option<i64>,
-    /// 経過が観測起点 (viewer が状態を見始めた時刻。transcript が読めないときだけ) なら真。≥ を付ける
+    /// 経過が観測起点 (viewer が状態を見始めた時刻。transcript が読めない、または turn が無いときだけ) なら真。≥ を付ける
     pub approx: bool,
     pub tab_id: Option<String>,
     pub ws: (String, String),
