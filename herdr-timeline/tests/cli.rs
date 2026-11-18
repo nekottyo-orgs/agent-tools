@@ -1086,6 +1086,19 @@ fn json_inbox_counts_attributed_msgs_only() {
 }
 
 #[test]
+fn json_working_secs_never_negative() {
+    let fx = Fx::new("json-working-future");
+    // 起点が now より後 (now の取得後に入力が届いた状態) を未来の時刻で作る
+    fx.transcript(SID2, &[user("2099-01-01T00:00:00Z", "実装して")]);
+    let v = json_of(&fx.run(&["--json"]));
+    assert_eq!(
+        jpane(&v, "wA:p2")["working_secs"],
+        json!(0),
+        "起点が now より後でも 0 に丸めるはず: {v}"
+    );
+}
+
+#[test]
 fn json_server_and_key_follow_session_count() {
     // 1 session: server は null、key は pane_id
     let one = Fx::new("json-one");
