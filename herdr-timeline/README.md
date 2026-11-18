@@ -70,7 +70,7 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 `--json` は stdout に JSON のトップレベル object 1 つだけを出す (末尾は改行 1 つ)。判定は画面と同じ関数を通す。
 
 - `panes`: pane の配列。常駐・dispatch の pane も含め、画面で隠すかどうかは `hidden` で示す
-- `warnings`: 警告の配列。`herdr pane list` に失敗した server があると `panes` が欠けるので、これで気づく
+- `warnings`: 警告の配列。herdr の一覧取得 (pane、workspace、tab) に失敗した server があると `panes` が欠けることがあるので、これで気づく
 
 | 項目 | 型 | 意味 |
 | --- | --- | --- |

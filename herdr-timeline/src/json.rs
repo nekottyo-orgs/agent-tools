@@ -7,7 +7,7 @@ use crate::text::clean;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-/// {"panes": [...], "warnings": [...]}。warnings は pane list に失敗した server があると panes が欠けるので必要
+/// {"panes": [...], "warnings": [...]}。warnings は一覧取得 (pane / workspace / tab) の失敗で panes が欠けることがあるので必要
 pub fn document(snap: &Snapshot, now: i64, dirs: &[PathBuf], briefs: &mut Briefs) -> Value {
     let msgs = read_msgs(&snap.files, false);
     let panes: Vec<Value> = snap
