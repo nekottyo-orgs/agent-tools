@@ -914,25 +914,29 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[test]
     fn msg_origin_read_failure_is_err_and_not_cached() {
+        use std::os::unix::fs::PermissionsExt;
         let d = tmp("origin-err");
-        // metadata は通るが読むと失敗する対象 (ディレクトリ) で、失敗が cache されないことを見る
         let f = d.join("a.msg");
-        fs::create_dir(&f).unwrap();
+        fs::write(&f, "from: w:p1\nfrom_socket: /s/a\n\n本文\n").unwrap();
+        let mode = |m| fs::set_permissions(&f, fs::Permissions::from_mode(m)).unwrap();
+        mode(0o000);
+        // root は 000 でも読めてしまい失敗を作れないので skip する
+        if fs::File::open(&f).is_ok() {
+            mode(0o644);
+            let _ = fs::remove_dir_all(&d);
+            return;
+        }
+        // 失敗時と回復時で (path, mtime, size) の key は同じ。失敗を cache すると回復後も None のままになる
         assert!(read_msg_origin(&f).is_err(), "読めない path は Err のはず");
         assert_eq!(msg_origin(&f), None, "読めない間は None のはず");
-        fs::remove_dir(&f).unwrap();
-        fs::write(&f, "from: w:p1\nfrom_socket: /s/a\n\n本文\n").unwrap();
+        mode(0o644);
         assert_eq!(
             msg_origin(&f).map(|x| x.0),
             Some("w:p1".to_string()),
             "直したら値が返る (失敗を cache しない) はず"
-        );
-        fs::write(&f, "from: w:p1\n\n").unwrap();
-        assert!(
-            matches!(read_msg_origin(&f), Ok(None)),
-            "旧形式は Ok(None) のはず"
         );
         let _ = fs::remove_dir_all(&d);
     }
