@@ -459,8 +459,7 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
                 let height = rows_n.saturating_sub(1).max(2);
                 let width = width_for(o.width, cols);
                 let body_h = height - usize::from(tty);
-                let phys = o.width.unwrap_or(cols);
-                let sp = split(phys, width, body_h);
+                let sp = split(cols, width, body_h);
                 let (list_w, list_h) = list_dims(tty, &sp, width, body_h);
                 let v = View {
                     rows: &rows,

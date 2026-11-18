@@ -11,6 +11,9 @@ const PANE_ID_MAX: usize = 20; // 行末の pane id の列幅の上限。別 ses
 const AGE_W: usize = 4;
 const ALERT_STYLE: &str = "1;31";
 pub const TL_MAX: usize = 8; // Timeline に出す行数の上限 (まとめた後)。残りは「他 N 件」
+/// 並べたときに Timeline に最低限残す桁数。これに満たない描画幅では積む
+const TL_MIN_W: usize = 20;
+
 pub const SIDE_MIN_WIDTH: usize = 120; // この幅以上なら一覧と Timeline を左右に並べ、未満なら上下に積む
 pub const LIST_W: usize = 70; // 並べるときの一覧の幅。Timeline は残り
 const SEP: &str = " │ "; // 並べるときの区切り (縦線 1 桁と左右の余白)
@@ -139,7 +142,7 @@ pub enum Split {
 /// 積むときの高さは一覧 6 : Timeline 4 で、どちらも 3 行は確保する
 pub fn split(phys: usize, width: usize, height: usize) -> Split {
     // phys と width は別々に読まれて食い違うことがあるので、幅が足りなければ積む
-    if phys >= SIDE_MIN_WIDTH && width >= LIST_W + width_of(SEP) {
+    if phys >= SIDE_MIN_WIDTH && width >= LIST_W + width_of(SEP) + TL_MIN_W {
         return Split::Side {
             list_w: LIST_W,
             tl_w: width.saturating_sub(LIST_W + width_of(SEP)),
@@ -186,22 +189,39 @@ pub fn timeline_panel(
     out
 }
 
+/// 行数が h を超えるなら末尾を 1 行の省略表示に替える。欠けていることが見えるようにするため
+fn fit_rows(mut rows: Vec<String>, h: usize) -> Vec<String> {
+    if rows.len() <= h {
+        return rows;
+    }
+    if h == 0 {
+        return Vec::new();
+    }
+    let hidden = rows.len() - (h - 1);
+    rows.truncate(h - 1);
+    rows.push(format!("他 {hidden} 件"));
+    rows
+}
+
 /// 一覧と Timeline を 1 つの画面にする。どの行も height 行・width 桁を超えない
 pub fn compose(sp: &Split, list: Vec<String>, tl: Vec<String>, height: usize) -> Vec<String> {
     match *sp {
-        Split::Side { list_w, tl_w } => (0..list.len().max(tl.len()).min(height))
-            .map(|i| {
-                let l = list.get(i).map_or("", String::as_str);
-                let r = tl.get(i).map_or("", String::as_str);
-                let gap = list_w.saturating_sub(visible_width(l));
-                debug_assert!(visible_width(r) <= tl_w);
-                format!("{l}{}{SEP}{r}", " ".repeat(gap))
-            })
-            .collect(),
+        Split::Side { list_w, tl_w } => {
+            let tl = fit_rows(tl, height);
+            (0..list.len().max(tl.len()).min(height))
+                .map(|i| {
+                    let l = list.get(i).map_or("", String::as_str);
+                    let r = tl.get(i).map_or("", String::as_str);
+                    let gap = list_w.saturating_sub(visible_width(l));
+                    debug_assert!(visible_width(r) <= tl_w);
+                    format!("{l}{}{SEP}{r}", " ".repeat(gap))
+                })
+                .collect()
+        }
         Split::Stack { list_h, tl_h } => list
             .into_iter()
             .take(list_h)
-            .chain(tl.into_iter().take(tl_h))
+            .chain(fit_rows(tl, tl_h))
             .collect(),
     }
 }
@@ -538,6 +558,25 @@ pub fn layout(v: &View) -> (Vec<String>, Vec<(String, String)>, Option<String>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_keeps_timeline_columns_and_follows_physical_width() {
+        // 描画幅の上書きが狭くて Timeline が残らないなら積む
+        let narrow = LIST_W + width_of(SEP) + 3;
+        assert!(matches!(split(150, narrow, 30), Split::Stack { .. }));
+        // 物理の列数が広ければ、描画幅が足りる限り並べる
+        let ok = LIST_W + width_of(SEP) + TL_MIN_W;
+        assert!(matches!(split(150, ok, 30), Split::Side { .. }));
+    }
+
+    #[test]
+    fn truncated_timeline_shows_omitted_count() {
+        let rows: Vec<String> = (0..9).map(|i| format!("e{i}")).collect();
+        let out = fit_rows(rows.clone(), 4);
+        assert_eq!(out.len(), 4, "高さを超えないはず");
+        assert_eq!(out[3], "他 6 件", "欠けた行数が見えるはず");
+        assert_eq!(fit_rows(rows.clone(), 9), rows, "収まるなら変えないはず");
+    }
 
     fn ev(ts: i64, kind: Kind) -> Event {
         Event {
