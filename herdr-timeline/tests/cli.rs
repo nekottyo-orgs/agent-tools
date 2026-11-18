@@ -104,7 +104,13 @@ impl Fx {
 
     /// runs が false なら HERDR_TIMELINE_RUNS_DIR を渡さない (runs-dir 未指定)
     fn run_with(&self, args: &[&str], runs: bool) -> Output {
+        self.run_env(args, runs, &[])
+    }
+
+    /// extra は追加の環境変数 (watchers の state_dir・ps の差し替え用)
+    fn run_env(&self, args: &[&str], runs: bool, extra: &[(&str, String)]) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_herdr-timeline"));
+        cmd.envs(extra.iter().map(|(k, v)| (*k, v)));
         if !runs {
             cmd.env_remove("HERDR_TIMELINE_RUNS_DIR");
         }
@@ -1165,4 +1171,149 @@ fn json_strips_escape_from_label_and_owner() {
         !stdout(&fx.run(&["--json"])).contains('\u{1b}'),
         "出力全体に ESC が無いはず"
     );
+}
+
+// --json の watchers。state_dir と ps は tempdir の stub に差し替え、実 state・実 ps には触れない
+const WATCH_ENV: [&str; 4] = [
+    "WATCH_PANE_TURNS_STATE_DIR",
+    "WATCH_PR_REVIEWS_STATE_DIR",
+    "WATCH_REVIEW_REQUESTS_STATE_DIR",
+    "HERDR_TIMELINE_PS_BIN",
+];
+
+/// stub ps。-p の問い合わせには ps-pid、-axo には ps-all の中身を返す
+fn watch_fx(name: &str) -> (Fx, Vec<(&'static str, String)>) {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new(name);
+    fx.write("ps/ps.sh", "#!/bin/sh\nd=$(dirname \"$0\")\ncase \"$1\" in\n  -o) cat \"$d/ps-pid\" ;;\n  -axo) cat \"$d/ps-all\" ;;\nesac\n");
+    fs::set_permissions(fx.path("ps/ps.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+    fx.write("ps/ps-pid", "");
+    fx.write("ps/ps-all", "");
+    let env = vec![
+        (WATCH_ENV[0], fx.path("st/turns").display().to_string()),
+        (WATCH_ENV[1], fx.path("st/pr").display().to_string()),
+        (WATCH_ENV[2], fx.path("st/req").display().to_string()),
+        (WATCH_ENV[3], fx.path("ps/ps.sh").display().to_string()),
+    ];
+    (fx, env)
+}
+
+fn watchers_of(fx: &Fx, env: &[(&str, String)]) -> Vec<serde_json::Value> {
+    let v = json_of(&fx.run_env(&["--json"], true, env));
+    v["watchers"].as_array().unwrap().clone()
+}
+
+#[test]
+fn watchers_are_four_in_fixed_order_with_env_state_dir() {
+    let (fx, env) = watch_fx("w-order");
+    let w = watchers_of(&fx, &env);
+    let names: Vec<_> = w.iter().map(|x| x["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        [
+            "watch-pane-turns",
+            "watch-my-pr-reviews",
+            "watch-other-pr-reviews",
+            "watch-merged-prs"
+        ]
+    );
+    assert_eq!(w[0]["state_dir"], env[0].1);
+    assert_eq!(w[1]["state_dir"], env[1].1);
+    assert_eq!(w[2]["state_dir"], env[2].1);
+    assert_eq!(
+        w[3]["state_dir"], env[1].1,
+        "merged は my-pr と同じ state_dir"
+    );
+    assert!(w
+        .iter()
+        .all(|x| x["running"] == false && x["pane"].is_null()));
+}
+
+#[test]
+fn watchers_running_follows_lock_pid_and_ps() {
+    let (fx, env) = watch_fx("w-lock");
+    fx.write("st/pr/resident.lock/pid", "4242\n");
+    fx.write("ps/ps-pid", "bash /x/watch-my-pr-reviews.sh --loop\n");
+    let w = watchers_of(&fx, &env);
+    assert_eq!(w[1]["running"], true);
+    assert_eq!(
+        w[3]["running"], false,
+        "merged の lock は別 (pid ファイル無し)"
+    );
+    // ps が別 script を返す
+    fx.write("ps/ps-pid", "vim notes.md\n");
+    assert_eq!(watchers_of(&fx, &env)[1]["running"], false);
+    // pid が数字でない
+    fx.write("st/pr/resident.lock/pid", "abc\n");
+    fx.write("ps/ps-pid", "watch-my-pr-reviews.sh\n");
+    assert_eq!(watchers_of(&fx, &env)[1]["running"], false);
+    // merged は merged-resident.lock を見る
+    fx.write("st/pr/merged-resident.lock/pid", "7\n");
+    fx.write("ps/ps-pid", "watch-merged-prs.sh\n");
+    assert_eq!(watchers_of(&fx, &env)[3]["running"], true);
+}
+
+#[test]
+fn watchers_pane_turns_uses_full_ps_listing_without_itself() {
+    let (fx, env) = watch_fx("w-turns");
+    fx.write(
+        "ps/ps-all",
+        "herdr-timeline --json watch-pane-turns.sh\nvim a\n",
+    );
+    assert_eq!(
+        watchers_of(&fx, &env)[0]["running"],
+        false,
+        "自分の行は数えない"
+    );
+    fx.write("ps/ps-all", "vim a\nbash /x/watch-pane-turns.sh\n");
+    assert_eq!(watchers_of(&fx, &env)[0]["running"], true);
+}
+
+#[test]
+fn watchers_last_activity_is_newest_entry_mtime_ignoring_lock_dir() {
+    let (fx, env) = watch_fx("w-mtime");
+    assert!(
+        watchers_of(&fx, &env)[1]["last_activity"].is_null(),
+        "state_dir 無しは null"
+    );
+    fx.write("st/pr/a.json", "{}");
+    fx.write("st/pr/resident.lock/pid", "1");
+    let t = |p: &str, secs: u64| {
+        let f = fs::File::options().write(true).open(fx.path(p)).unwrap();
+        f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap();
+    };
+    t("st/pr/a.json", 1_000_000);
+    // lock ディレクトリ配下の更新は無視される (直下の mtime だけを見る)
+    let w = watchers_of(&fx, &env);
+    assert_eq!(w[1]["last_activity"], 1_000_000);
+    assert!(w[0]["last_activity"].is_null());
+}
+
+#[test]
+fn watchers_pane_is_exact_label_match_or_null() {
+    let (fx, env) = watch_fx("w-pane");
+    let mut panes: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fx.path("herdr/panes.json")).unwrap()).unwrap();
+    let list = panes["result"]["panes"].as_array_mut().unwrap();
+    list.push(pane(
+        "wA:p8",
+        "idle",
+        SID2,
+        "tA:2",
+        "wA",
+        "watch-my-pr-reviews",
+    ));
+    list.push(pane(
+        "wA:p9",
+        "idle",
+        SID2,
+        "tA:2",
+        "wA",
+        "watch-my-pr-reviews-2",
+    ));
+    fx.write("herdr/panes.json", &panes.to_string());
+    let w = watchers_of(&fx, &env);
+    assert_eq!(w[1]["pane"], "wA:p8");
+    assert!(w[2]["pane"].is_null());
 }
