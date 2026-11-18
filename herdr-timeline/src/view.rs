@@ -17,7 +17,9 @@ const TL_MIN_W: usize = 20;
 const TL_COL_MAX: usize = 120;
 
 pub const SIDE_MIN_WIDTH: usize = 120; // この幅以上なら一覧と Timeline を左右に並べ、未満なら上下に積む
-pub const LIST_W: usize = 70; // 並べるときの一覧の幅。Timeline は残り
+pub const LIST_MIN: usize = 70; // 並べるときの一覧の最小幅
+/// 並べるときの Timeline 列の取り分 (描画幅に対する %)。一覧は残り
+const TL_SHARE_PCT: usize = 35;
 const SEP: &str = " │ "; // 並べるときの区切り (縦線 1 桁と左右の余白)
 
 pub struct Row {
@@ -145,10 +147,15 @@ pub enum Split {
 /// 積むときの高さは一覧 6 : Timeline 4 で、どちらも 3 行は確保する
 pub fn split(phys: usize, width: usize, height: usize) -> Split {
     // phys と width は別々に読まれて食い違うことがあるので、幅が足りなければ積む
-    if phys >= SIDE_MIN_WIDTH && width >= LIST_W + width_of(SEP) + TL_MIN_W {
+    if phys >= SIDE_MIN_WIDTH && width >= LIST_MIN + width_of(SEP) + TL_MIN_W {
+        // 一覧が LIST_MIN を割らない範囲で Timeline に TL_SHARE_PCT % を渡す。上限を超えた分は一覧へ回す
+        let room = width - LIST_MIN - width_of(SEP);
+        let tl_w = (width * TL_SHARE_PCT / 100)
+            .clamp(TL_MIN_W, room)
+            .min(TL_COL_MAX);
         return Split::Side {
-            list_w: LIST_W,
-            tl_w: width.saturating_sub(LIST_W + width_of(SEP)).min(TL_COL_MAX),
+            list_w: width - width_of(SEP) - tl_w,
+            tl_w,
         };
     }
     let tl_h = (height * 4 / 10).max(3).min(height.saturating_sub(1));
@@ -566,10 +573,10 @@ mod tests {
     #[test]
     fn split_keeps_timeline_columns_and_follows_physical_width() {
         // 描画幅の上書きが狭くて Timeline が残らないなら積む
-        let narrow = LIST_W + width_of(SEP) + 3;
+        let narrow = LIST_MIN + width_of(SEP) + 3;
         assert!(matches!(split(150, narrow, 30), Split::Stack { .. }));
         // 物理の列数が広ければ、描画幅が足りる限り並べる
-        let ok = LIST_W + width_of(SEP) + TL_MIN_W;
+        let ok = LIST_MIN + width_of(SEP) + TL_MIN_W;
         assert!(matches!(split(150, ok, 30), Split::Side { .. }));
     }
 
@@ -623,10 +630,35 @@ mod tests {
         assert_eq!(
             split(120, 119, 30),
             Split::Side {
-                list_w: LIST_W,
-                tl_w: 119 - LIST_W - 3
+                list_w: 119 - 3 - 41,
+                tl_w: 41
             },
-            "120 は並べ、区切りの 3 桁を引くはず"
+            "120 は並べ、Timeline は 35% (41 桁)、一覧は区切りの 3 桁を引いた残りのはず"
+        );
+        assert_eq!(
+            split(194, 193, 30),
+            Split::Side {
+                list_w: 193 - 3 - 67,
+                tl_w: 67
+            },
+            "194 は 35% (67 桁) のはず"
+        );
+        assert_eq!(
+            split(289, 288, 30),
+            Split::Side {
+                list_w: 288 - 3 - 100,
+                tl_w: 100
+            },
+            "289 は 35% (100 桁) のはず"
+        );
+        let min = LIST_MIN + 3 + TL_MIN_W;
+        assert_eq!(
+            split(150, min, 30),
+            Split::Side {
+                list_w: LIST_MIN,
+                tl_w: TL_MIN_W
+            },
+            "35% が最小未満なら Timeline は最小幅で、一覧は LIST_MIN のはず"
         );
     }
 
@@ -635,10 +667,10 @@ mod tests {
         assert_eq!(
             split(400, 399, 30),
             Split::Side {
-                list_w: LIST_W,
+                list_w: 399 - 3 - TL_COL_MAX,
                 tl_w: TL_COL_MAX
             },
-            "広い端末でも Timeline 列は上限までのはず"
+            "広い端末でも Timeline 列は上限までで、余りは一覧のはず"
         );
     }
 
