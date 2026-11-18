@@ -277,9 +277,7 @@ pub fn clean(s: &str) -> String {
     squash(&out)
 }
 
-pub const BODY_MAX: usize = 40;
-
-/// Timeline の本文を短くする。[tag]・8 桁 id・「〜から: 」の前置きを外し、パスは basename にし、最初の文だけ残す
+/// Timeline の本文を整える (幅への切り詰めは呼び出し側)。[tag]・8 桁 id・「〜から: 」の前置きを外し、パスは basename にし、最初の文だけ残す
 pub fn tl_body(kind: Kind, text: &str) -> String {
     let mut t = strip_tags(text);
     if kind != Kind::Msg {
@@ -297,7 +295,7 @@ pub fn tl_body(kind: Kind, text: &str) -> String {
         })
         .unwrap_or(t.len());
     let head = t[..cut].trim();
-    clip(if head.is_empty() { &t } else { head }, BODY_MAX)
+    (if head.is_empty() { &t } else { head }).to_string()
 }
 
 fn is_word(c: char) -> bool {
