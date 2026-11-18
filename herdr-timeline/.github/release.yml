@@ -1,11 +1,10 @@
 changelog:
   exclude:
     labels:
-      # tool に属さない変更 (ADR、CI、設定) は release notes に載せない
-      - skip-changelog
-      # 他 tool の release PR。tagpr が付ける label で除く (bot の author 指定は効かなかった)
+      # tagpr が release PR に付ける label。release PR を notes に載せない
       - tagpr
   categories:
+    # この tool の label が付いた PR だけを載せる (label は .github/workflows/labeler.yml が path から付ける)
     - title: Changes
       labels:
-        - "*"
+        - herdr-timeline
