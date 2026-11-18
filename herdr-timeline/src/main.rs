@@ -39,7 +39,7 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
   --once             1 回描画して終わる
   --interval N       更新の間隔 (秒、既定 5、上限 86400)
   --width N          表示幅を固定する (既定は端末幅 - 1、最小 30、上限 1000)
-  --timeline PANE_ID pane の Timeline を 1 回出して終わる (非対話)
+  --timeline PANE_ID pane の Timeline を 1 回出して終わる (非対話。常駐の pane も引ける)
   --runs-dir DIR     run のディレクトリ (DIR/<run>/run.md と DIR/<run>/inbox/{new,cur}/*.msg)。
                      環境変数 HERDR_TIMELINE_RUNS_DIR でも渡せる。無ければ報告・進捗・未処理の報告を出さない
   --show-resident    常駐の pane (watch 系、Cue 専任、review-submit) は既定で一覧に出さない。これで出す
@@ -499,7 +499,7 @@ fn main() {
             exit(2);
         }
     };
-    let env = Env::from_env(o.runs.clone(), o.show_resident);
+    let env = Env::from_env(o.runs.clone(), o.show_resident || o.timeline.is_some());
     let color = std::env::var_os("NO_COLOR").is_none()
         && (isatty(1) || std::env::var_os("FORCE_COLOR").is_some());
     if let Some(p) = &o.timeline {

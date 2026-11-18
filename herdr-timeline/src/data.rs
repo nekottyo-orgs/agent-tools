@@ -306,7 +306,11 @@ pub fn gather(env: &Env) -> Snapshot {
                 .get("agent_session")
                 .map(|a| s(a, "value"))
                 .filter(|v| !v.is_empty());
-            if !env.show_resident && is_resident(&clean(&s(p, "label"))) {
+            // blocked は人の対応待ちなので、常駐でも隠さない
+            if !env.show_resident
+                && is_resident(&clean(&s(p, "label")))
+                && status_of(&s(p, "agent_status")) != "blocked"
+            {
                 continue; // 名前の引き当て (snap.names) は上で済ませてあるので残る
             }
             snap.panes.push(PaneRow {
