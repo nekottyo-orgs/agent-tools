@@ -86,6 +86,7 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 | `status` | string | `blocked` / `working` / `idle` / `done` / `unknown` |
 | `working_secs` | integer か null | working のとき、transcript の最後の入力からの経過秒。起点が transcript から取れない (画面の `≥`) ときは null |
 | `inbox` | object か null | `count` (帰属する msg の件数) と `last_at` (最後の msg の時刻、epoch 秒、無ければ null)。transcript が無い、または最初の時刻が取れない pane は null。run が無いときは `count` 0 |
+| `anomaly` | string か null | status が working / blocked の pane だけ、画面の末尾 20 行 (`herdr pane read <PANE_ID> --lines 20`) を読み、一覧 (src/json.rs の定数 `ANOMALY_PATTERNS`、設定の配列) の文字列を含めば、その一覧の要素を返す (複数なら配列の先頭側)。画面の文字列は出さない。それ以外の status、一致なし、`pane read` の失敗は null (失敗は `warnings` に積まない)。`--once` の画面には出さない |
 | `hidden` | boolean | 画面の既定で隠す pane か。常駐・dispatch で、blocked でないもの。`--show-resident` では変わらない |
 | `hidden_reason` | string か null | `resident` / `dispatch`。hidden でなければ null |
 | `owner` | string か null | 常駐は label が `watch-` で始まるときその label、それ以外は null。dispatch は `<repo略称>#<番号>` (label 末尾の `-bundle` は落とす)。blocked で hidden でない pane も持つ。分類されなければ null |
