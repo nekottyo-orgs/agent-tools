@@ -1031,6 +1031,30 @@ fn json_conflicts_with_timeline_and_implies_once() {
     );
 }
 
+// 見つかった socket が 1 つで、HERDR_SOCKET_PATH が実在しない socket を指すとき、見つかった server の pane を落とさない。
+// fake herdr は HERDR_SOCKET_PATH が実在するときだけ答える
+#[test]
+fn json_uses_the_only_discovered_socket_when_env_socket_is_absent() {
+    let fx = Fx::new("json-one-sock");
+    fx.write("herdr/sessions/foo/herdr.sock", "");
+    let orig = fs::read_to_string(fx.path("herdr/herdr.sh")).unwrap();
+    fx.write(
+        "herdr/herdr.sh",
+        &format!("[ -e \"$HERDR_SOCKET_PATH\" ] || exit 1\n{orig}"),
+    );
+    let o = fx.run(&["--json"]);
+    let v = json_of(&o);
+    assert_eq!(
+        v["panes"].as_array().unwrap().len(),
+        4,
+        "見つかった 1 つの server の pane が出るはず: {v}"
+    );
+    assert!(
+        v["warnings"].as_array().unwrap().is_empty(),
+        "warning は出ないはず: {v}"
+    );
+}
+
 #[test]
 fn json_warns_when_pane_list_fails() {
     let fx = Fx::new("json-warn");

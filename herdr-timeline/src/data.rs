@@ -147,7 +147,8 @@ pub fn run_herdr(env: &Env, args: &[&str], sock: Option<&Path>) -> Result<Vec<u8
     }
 }
 
-/// [(session 名, socket)]。socket が 1 つ以下なら今の環境の 1 session として扱う
+/// [(session 名, socket)]。socket が 1 つ以下なら今の環境の 1 session として扱う。
+/// ただし 1 つだけ見つかり、今の環境の socket が実在しないときは、見つかった方を使う (名前は付けず、text 表示の見た目は変えない)
 fn sessions(env: &Env) -> Vec<(String, Option<PathBuf>)> {
     let mut found = vec![("default".to_string(), env.herdr_dir.join("herdr.sock"))];
     if let Ok(rd) = fs::read_dir(env.herdr_dir.join("sessions")) {
@@ -166,6 +167,8 @@ fn sessions(env: &Env) -> Vec<(String, Option<PathBuf>)> {
     found.retain(|(_, p)| p.exists());
     if found.len() > 1 {
         found.into_iter().map(|(n, p)| (n, Some(p))).collect()
+    } else if let (Some((_, p)), false) = (found.first(), env.own_sock.exists()) {
+        vec![(String::new(), Some(p.clone()))]
     } else {
         vec![(String::new(), None)]
     }
