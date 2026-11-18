@@ -110,6 +110,17 @@ impl Fx {
     /// extra は追加の環境変数 (watchers の state_dir・ps の差し替え用)
     fn run_env(&self, args: &[&str], runs: bool, extra: &[(&str, String)]) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_herdr-timeline"));
+        // 既定では実 HOME の state と実 ps に触れないよう、存在しない state_dir と何も出さない stub ps に向ける。extra で上書きできる
+        self.write("ps-none/ps.sh", "#!/bin/sh\nexit 0\n");
+        std::fs::set_permissions(
+            self.path("ps-none/ps.sh"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        for k in &WATCH_ENV[..3] {
+            cmd.env(k, self.path("state-none").join(k));
+        }
+        cmd.env(WATCH_ENV[3], self.path("ps-none/ps.sh"));
         cmd.envs(extra.iter().map(|(k, v)| (*k, v)));
         if !runs {
             cmd.env_remove("HERDR_TIMELINE_RUNS_DIR");
@@ -1316,4 +1327,35 @@ fn watchers_pane_is_exact_label_match_or_null() {
     let w = watchers_of(&fx, &env);
     assert_eq!(w[1]["pane"], "wA:p8");
     assert!(w[2]["pane"].is_null());
+}
+
+#[test]
+fn watchers_empty_env_state_dir_falls_back_to_default() {
+    let (fx, mut env) = watch_fx("w-empty");
+    env[1].1 = String::new();
+    let home = fx.path("home").display().to_string();
+    env.push(("HOME", home.clone()));
+    let w = watchers_of(&fx, &env);
+    assert_eq!(
+        w[1]["state_dir"],
+        format!("{home}/.agents/state/watch-pr-reviews")
+    );
+}
+
+#[test]
+fn watchers_last_activity_sees_one_level_below_subdirs() {
+    let (fx, env) = watch_fx("w-deep");
+    fx.write("st/turns/advance-notice/x.json", "{}");
+    fx.write("st/turns/advance-notice/deeper/y.json", "{}");
+    let set = |p: &str, secs: u64| {
+        let f = fs::File::open(fx.path(p)).unwrap();
+        f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap();
+    };
+    set("st/turns/advance-notice/x.json", 3_000_000);
+    set("st/turns/advance-notice/deeper/y.json", 9_000_000);
+    set("st/turns/advance-notice/deeper", 1);
+    set("st/turns/advance-notice", 1);
+    // 2 階層より下 (deeper/y.json) は見ない。1 段下の x.json の mtime が出る
+    assert_eq!(watchers_of(&fx, &env)[0]["last_activity"], 3_000_000);
 }

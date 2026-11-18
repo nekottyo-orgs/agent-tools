@@ -44,9 +44,9 @@ pub fn list(panes: &[Value]) -> Vec<Value> {
     WATCHERS
         .iter()
         .map(|&(name, env, def, lock, script)| {
-            let dir = match std::env::var(env) {
-                Ok(d) => d,
-                Err(_) => match std::env::var("HOME") {
+            let dir = match std::env::var(env).ok().filter(|d| !d.is_empty()) {
+                Some(d) => d,
+                None => match std::env::var("HOME") {
                     Ok(h) => format!("{h}/.agents/state/{def}"),
                     Err(_) => format!("~/.agents/state/{def}"),
                 },
@@ -86,22 +86,35 @@ fn any_running(ps: &str, script: &str) -> bool {
     })
 }
 
-/// 直下のエントリの mtime の最大 (epoch 秒)。lock ディレクトリ (*.lock) は除く。再帰しない
+/// 直下と、直下のディレクトリの 1 段下のエントリの mtime の最大 (epoch 秒)。lock ディレクトリ (*.lock) は除く。
+/// watch-pane-turns は直下が advance-notice/ などのディレクトリで、直下の mtime は中身の書き込みを映さないため 2 階層まで見る
 fn last_activity(dir: &str) -> Option<i64> {
-    std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .filter(|e| !e.file_name().to_string_lossy().ends_with(".lock"))
-        .filter_map(|e| {
-            e.metadata()
-                .ok()?
-                .modified()
-                .ok()?
-                .duration_since(UNIX_EPOCH)
-                .ok()
-        })
-        .map(|d| d.as_secs() as i64)
-        .max()
+    fn mtime(e: &std::fs::DirEntry) -> Option<i64> {
+        let d = e
+            .metadata()
+            .ok()?
+            .modified()
+            .ok()?
+            .duration_since(UNIX_EPOCH)
+            .ok()?;
+        Some(d.as_secs() as i64)
+    }
+    let not_lock = |e: &std::fs::DirEntry| !e.file_name().to_string_lossy().ends_with(".lock");
+    let mut best = None;
+    for e in std::fs::read_dir(dir).ok()?.flatten().filter(not_lock) {
+        best = best.max(mtime(&e));
+        if e.file_type().is_ok_and(|t| t.is_dir()) {
+            for c in std::fs::read_dir(e.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(not_lock)
+            {
+                best = best.max(mtime(&c));
+            }
+        }
+    }
+    best
 }
 
 #[cfg(test)]

@@ -75,7 +75,7 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
   - `running`: lock を持つ 3 本は `<state_dir>/resident.lock/pid` (merged は `merged-resident.lock/pid`) の pid が数字で、`ps -o command= -p <pid>` に script 名を含めば true。pid ファイルが無い・空・数字でない・ps の失敗は false
   - `watch-pane-turns` は lock が無いので `ps -axo command=` に `watch-pane-turns.sh` を含む行があれば true (herdr-timeline 自身の行は除く)。ps は `HERDR_TIMELINE_PS_BIN` で差し替えられる
   - `pane`: label が `name` と完全一致する pane の `pane_id` (複数なら先頭、無ければ null)
-  - `state_dir`: 各 watcher の env (`WATCH_PANE_TURNS_STATE_DIR` / `WATCH_PR_REVIEWS_STATE_DIR` / `WATCH_REVIEW_REQUESTS_STATE_DIR`) か、既定の `~/.agents/state/…` を展開した値。`last_activity` はその直下のエントリ (lock ディレクトリを除く) の mtime の最大 (epoch 秒)。無い・空なら null
+  - `state_dir`: 各 watcher の env (`WATCH_PANE_TURNS_STATE_DIR` / `WATCH_PR_REVIEWS_STATE_DIR` / `WATCH_REVIEW_REQUESTS_STATE_DIR`) か、既定の `~/.agents/state/…` を展開した値。`last_activity` はその直下のエントリと、直下のディレクトリの 1 段下のエントリ (lock ディレクトリを除く、2 階層まで) の mtime の最大 (epoch 秒)。空の env は既定扱い。無い・空なら null
 
 | 項目 | 型 | 意味 |
 | --- | --- | --- |
