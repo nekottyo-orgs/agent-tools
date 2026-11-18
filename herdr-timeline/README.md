@@ -32,6 +32,8 @@ shasum -a 256 -c herdr-timeline-<target>.sha256 \
   && mv herdr-timeline-<target> "$HOME/.cargo/bin/herdr-timeline"
 ```
 
+`$HOME/.cargo/bin` が PATH に無いときは、`export PATH="$HOME/.cargo/bin:$PATH"` を shell の設定に足すか、`"$HOME/.cargo/bin/herdr-timeline"` とフルパスで呼ぶ。
+
 `cargo install --path herdr-timeline --locked` でも入れられる。
 
 ## 使い方
