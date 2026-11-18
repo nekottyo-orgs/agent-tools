@@ -362,8 +362,18 @@ pub fn gather(env: &Env) -> Snapshot {
 /// 台帳に属すとは、run の inbox の msg が pane id と socket で帰属するか、run.md の orchestrator_pane であること。
 /// since は transcript 無しでも判定したいので下限なしにする
 fn hide_dispatched(snap: &mut Snapshot, labels: &HashMap<String, String>) {
+    let candidate = |r: &PaneRow| {
+        labels.get(&r.key).is_some_and(|l| is_dispatched_label(l)) && r.status != "blocked"
+    };
+    // run が読めない (--runs-dir 不達・run 無し) ときは台帳を判定できないので外さない。
+    // 外す候補が無ければ inbox 全体を parse しない
+    if snap.runs.is_empty() || !snap.panes.iter().any(candidate) {
+        return;
+    }
     let msgs = read_msgs(&snap.files, false);
     let in_ledger = |r: &PaneRow| {
+        // i64::MIN で since を無効にするので、同じ pane id と socket の古い msg が残っていても
+        // 台帳に属すとみなして外さない (安全側)
         let p = core::Pane {
             pane: r.pane.clone(),
             socket: r.socket.clone(),
@@ -374,11 +384,7 @@ fn hide_dispatched(snap: &mut Snapshot, labels: &HashMap<String, String>) {
     let drop: Vec<String> = snap
         .panes
         .iter()
-        .filter(|r| {
-            labels.get(&r.key).is_some_and(|l| is_dispatched_label(l))
-                && r.status != "blocked"
-                && !in_ledger(r)
-        })
+        .filter(|r| candidate(r) && !in_ledger(r))
         .map(|r| r.key.clone())
         .collect();
     snap.panes.retain(|r| !drop.contains(&r.key));

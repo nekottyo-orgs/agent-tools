@@ -396,6 +396,57 @@ fn dispatched_panes_hidden_unless_in_ledger_or_blocked() {
     );
 }
 
+fn dispatched_fx(name: &str) -> Fx {
+    let fx = Fx::new(name);
+    let mut panes: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fx.path("herdr/panes.json")).unwrap())
+            .unwrap();
+    let list = panes["result"]["panes"].as_array_mut().unwrap();
+    list.push(pane("wA:p5", "working", SID2, "tA:2", "wA", "repo-123"));
+    fx.write("herdr/panes.json", &panes.to_string());
+    fx
+}
+
+#[test]
+fn dispatched_pane_shown_when_orchestrator_pane() {
+    let fx = dispatched_fx("dispatched-orch");
+    fx.write("runs/r1/run.md", "# run\norchestrator_pane: wA:p5\n");
+    let a = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        a.contains("repo-123 の title"),
+        "窓口の pane は dispatch の形でも出るはず: {a}"
+    );
+}
+
+#[test]
+fn dispatched_pane_hidden_when_msg_from_other_socket() {
+    let fx = dispatched_fx("dispatched-sock");
+    fx.msg(
+        "runs/r1/inbox/new/1.msg",
+        "wA:p5",
+        Some("/other/herdr.sock"),
+        "done",
+        "2026-01-02T03:10:00Z",
+        "報告",
+    );
+    let a = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        !a.contains("repo-123 の title"),
+        "別 socket の msg は帰属しないので外れるはず: {a}"
+    );
+}
+
+#[test]
+fn dispatched_pane_shown_when_runs_dir_missing() {
+    let fx = dispatched_fx("dispatched-nodir");
+    std::fs::remove_dir_all(fx.path("runs")).unwrap();
+    let a = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        a.contains("repo-123 の title"),
+        "存在しない runs-dir なら台帳が読めないので外さないはず: {a}"
+    );
+}
+
 #[test]
 fn req6_bad_arguments_exit_2() {
     for args in [
