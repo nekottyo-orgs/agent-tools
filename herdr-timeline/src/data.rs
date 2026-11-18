@@ -377,6 +377,7 @@ fn hide_dispatched(snap: &mut Snapshot, labels: &HashMap<String, String>) {
         .files
         .iter()
         .filter_map(|(_, p)| msg_origin(p))
+        .map(|(f, s)| (f, canon(&s))) // cache は生の値。socket が後から実在しても合うよう毎周期 canon する
         .collect();
     let in_ledger = |r: &PaneRow| {
         // since は見ず pane id と socket の一致だけで判定するので、古い msg が残っていても
@@ -386,7 +387,7 @@ fn hide_dispatched(snap: &mut Snapshot, labels: &HashMap<String, String>) {
                 && x.orch_socket
                     .as_deref()
                     .is_none_or(|s| canon(s) == canon(&r.socket))
-        }) || origins.contains(&(r.pane.clone(), r.socket.clone()))
+        }) || origins.contains(&(r.pane.clone(), canon(&r.socket)))
     };
     let drop: Vec<String> = snap
         .panes
@@ -411,26 +412,28 @@ fn msg_origin(path: &Path) -> Option<(String, String)> {
             return v.clone();
         }
     }
-    let v = read_msg_origin(path);
+    // 読み取り失敗は一時的かもしれないので cache せず、次の周期で再試行する
+    let v = read_msg_origin(path).ok()?;
     c.insert(path.to_path_buf(), (key.0, key.1, v.clone()));
     v
 }
 
 /// 最初の空行までのヘッダだけを読む
-fn read_msg_origin(path: &Path) -> Option<(String, String)> {
+/// 読み取り失敗は Err、header を読めたが origin が無い (旧形式) は Ok(None)
+fn read_msg_origin(path: &Path) -> std::io::Result<Option<(String, String)>> {
     let (mut from, mut sock) = (None, None);
-    for l in BufReader::new(fs::File::open(path).ok()?).lines() {
-        let l = l.ok()?;
+    for l in BufReader::new(fs::File::open(path)?).lines() {
+        let l = l?;
         if l.is_empty() {
             break;
         }
         match l.split_once(':') {
             Some(("from", v)) => from = Some(v.trim().to_string()),
-            Some(("from_socket", v)) if !v.trim().is_empty() => sock = Some(canon(v.trim())),
+            Some(("from_socket", v)) if !v.trim().is_empty() => sock = Some(v.trim().to_string()),
             _ => {}
         }
     }
-    Some((from?, sock?))
+    Ok(from.zip(sock))
 }
 
 fn mtime(p: &Path) -> Option<i64> {
@@ -908,6 +911,39 @@ mod tests {
         );
         fs::write(&f, "from: w:p2\n\n本文\n").unwrap();
         assert_eq!(msg_origin(&f), None, "旧形式は帰属しないはず");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn msg_origin_read_failure_is_err_and_not_cached() {
+        let d = tmp("origin-err");
+        let f = d.join("a.msg");
+        assert!(read_msg_origin(&f).is_err(), "読めない path は Err のはず");
+        assert_eq!(msg_origin(&f), None, "読めない間は None のはず");
+        fs::write(&f, "from: w:p1\nfrom_socket: /s/a\n\n本文\n").unwrap();
+        assert_eq!(
+            msg_origin(&f).map(|x| x.0),
+            Some("w:p1".to_string()),
+            "直したら値が返る (失敗を cache しない) はず"
+        );
+        fs::write(&f, "from: w:p1\n\n").unwrap();
+        assert!(
+            matches!(read_msg_origin(&f), Ok(None)),
+            "旧形式は Ok(None) のはず"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn msg_origin_keeps_raw_socket() {
+        let d = tmp("origin-raw");
+        let f = d.join("a.msg");
+        fs::write(&f, "from: w:p1\nfrom_socket:  /no/such/../sock \n\n").unwrap();
+        assert_eq!(
+            msg_origin(&f).map(|x| x.1),
+            Some("/no/such/../sock".to_string()),
+            "canon 前の trim 済みの値のはず"
+        );
         let _ = fs::remove_dir_all(&d);
     }
 
