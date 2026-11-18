@@ -294,6 +294,50 @@ fn req3_attribution_by_socket_and_session_start() {
 }
 
 #[test]
+fn resident_panes_hidden_unless_show_resident() {
+    let fx = Fx::new("resident");
+    let mut panes: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fx.path("herdr/panes.json")).unwrap())
+            .unwrap();
+    let list = panes["result"]["panes"].as_array_mut().unwrap();
+    list.push(pane("wA:p8", "working", SID2, "tA:2", "wA", "watch-worker"));
+    list.push(pane("wA:p9", "working", SID2, "tA:2", "wA", "impl-task"));
+    list.push(pane(
+        "wA:p7",
+        "blocked",
+        SID2,
+        "tA:2",
+        "wA",
+        "review-submit",
+    ));
+    fx.write("herdr/panes.json", &panes.to_string());
+    let hidden = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        !hidden.contains("watch-worker の title"),
+        "常駐の pane は既定で出ないはず: {hidden}"
+    );
+    assert!(
+        hidden.contains("impl-task の title"),
+        "常駐でない pane は出るはず: {hidden}"
+    );
+    assert!(
+        hidden.contains("review-submit の title"),
+        "blocked の常駐 pane は要対応なので隠さないはず: {hidden}"
+    );
+    let tl = fx.run(&["--timeline", "wA:p8"]);
+    assert_eq!(
+        tl.status.code(),
+        Some(0),
+        "--timeline は常駐 pane も引けるはず"
+    );
+    let shown = stdout(&fx.run(&["--once", "--width", "100", "--show-resident"]));
+    assert!(
+        shown.contains("watch-worker の title") && shown.contains("impl-task の title"),
+        "--show-resident では常駐も出るはず: {shown}"
+    );
+}
+
+#[test]
 fn req6_bad_arguments_exit_2() {
     for args in [
         &["--timeline"][..],
@@ -326,6 +370,7 @@ fn req7_help_and_readme_describe_scope_exit_codes_and_keys() {
             "-h",
             [
                 "--timeline",
+                "--show-resident",
                 "transcript",
                 "inbox",
                 "書き込まない",
@@ -339,6 +384,7 @@ fn req7_help_and_readme_describe_scope_exit_codes_and_keys() {
             "README",
             [
                 "--timeline",
+                "--show-resident",
                 "transcript",
                 "inbox",
                 "書き込まない",

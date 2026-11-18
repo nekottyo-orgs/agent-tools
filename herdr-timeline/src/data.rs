@@ -17,16 +17,31 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
 
+// herdr の pane の API には常駐の印が無い (run-inbox の --resident は起動時の env を渡すだけで pane list に出ない)。
+// そのため常駐かどうかは pane の label の完全一致で決める。常駐の pane を増やすときはここに足す。
+pub const RESIDENT_LABELS: &[&str] = &[
+    "watch-my-pr-reviews",
+    "watch-other-pr-reviews",
+    "watch-worker",
+    "review-submit",
+    "Cue回答の監視",
+];
+
+pub fn is_resident(label: &str) -> bool {
+    RESIDENT_LABELS.contains(&label)
+}
+
 pub struct Env {
     pub herdr: Vec<String>,
     pub herdr_dir: PathBuf,
     pub projects: PathBuf,
     pub runs: Option<PathBuf>,
     pub own_sock: PathBuf,
+    pub show_resident: bool,
 }
 
 impl Env {
-    pub fn from_env(runs: Option<PathBuf>) -> Env {
+    pub fn from_env(runs: Option<PathBuf>, show_resident: bool) -> Env {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let home = PathBuf::from(var("HOME").unwrap_or_default());
         let herdr_dir = var("HERDR_TIMELINE_HERDR_DIR")
@@ -47,6 +62,7 @@ impl Env {
                 .unwrap_or_else(|| home.join(".claude/projects")),
             runs: runs.or_else(|| var("HERDR_TIMELINE_RUNS_DIR").map(PathBuf::from)),
             own_sock,
+            show_resident,
         }
     }
 }
@@ -290,6 +306,13 @@ pub fn gather(env: &Env) -> Snapshot {
                 .get("agent_session")
                 .map(|a| s(a, "value"))
                 .filter(|v| !v.is_empty());
+            // blocked は人の対応待ちなので、常駐でも隠さない
+            if !env.show_resident
+                && is_resident(&s(p, "label"))
+                && status_of(&s(p, "agent_status")) != "blocked"
+            {
+                continue; // 名前の引き当て (snap.names) は上で済ませてあるので残る
+            }
             snap.panes.push(PaneRow {
                 key: tag.clone(),
                 tag,
@@ -727,6 +750,22 @@ mod tests {
 
     const T: &str =
         r#"{"type":"user","timestamp":"2026-01-02T03:04:05Z","message":{"content":"直して"}}"#;
+
+    #[test]
+    fn resident_labels_match_exactly() {
+        for l in RESIDENT_LABELS {
+            assert!(is_resident(l), "{l} は常駐のはず");
+        }
+        for l in [
+            "impl-task",
+            "watch-worker2",
+            "Watch-worker",
+            "watch-worker ",
+            "",
+        ] {
+            assert!(!is_resident(l), "{l:?} は常駐でないはず (完全一致のみ)");
+        }
+    }
 
     #[test]
     fn req5_cache_by_path_mtime_size() {
