@@ -13,6 +13,10 @@ workflows:
         - 'actions/upload-artifact@v7.0.2'
     '.github/workflows/secret-scan.yml':
         - 'actions/checkout@v7.0.1'
+    '.github/workflows/tagpr-herdr-timeline.yml':
+        - 'actions/checkout@v6.1.0'
+        - 'actions/create-github-app-token@v3.3.0'
+        - 'songmu/tagpr@v1.22.0'
     '.github/workflows/tagpr-secret-scan.yml':
         - 'actions/checkout@v6.1.0'
         - 'actions/create-github-app-token@v3.3.0'

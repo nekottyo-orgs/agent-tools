@@ -1,0 +1,40 @@
+# herdr-timeline の release の自動化。仕組みと前提は tagpr.yml と同じ (設定は herdr-timeline/.tagpr)。
+# bash-gates の merge で herdr-timeline の release PR が更新されないよう、herdr-timeline/ の変更だけで走らせる。
+# docs と markdown だけの変更では走らせない (理由は tagpr.yml と同じ)。
+# paths は後ろに書いたものが前の一致を外す。tagpr が release PR で更新する CHANGELOG.md だけは除外から戻す。
+# 初回の release PR が Cargo.toml を変えないと、merge の push が markdown だけの変更になり tag が作られないため。
+name: tagpr-herdr-timeline
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - 'herdr-timeline/**'
+      - '!**/docs/**'
+      - '!**/*.md'
+      - 'herdr-timeline/CHANGELOG.md'
+
+permissions:
+  contents: read
+
+jobs:
+  herdr-timeline:
+    runs-on: ubuntu-latest
+    steps:
+      # app-id は非推奨 (deprecationMessage: "Use 'client-id' instead.") なので client-id を使う
+      - uses: actions/create-github-app-token@v3.3.0
+        id: app-token
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: read
+      - uses: actions/checkout@v6.1.0
+        with:
+          persist-credentials: false
+      - uses: Songmu/tagpr@v1.22.0
+        with:
+          config: herdr-timeline/.tagpr
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}

@@ -20,6 +20,22 @@ herdr (端末の multiplexer) の pane を「要対応 / 作業中 / done・idle
 - 読めないファイルや herdr の失敗では落ちない。イベント 0 件か、画面上部の警告 1 行になる
 - inbox の報告は `from` (pane id)、`from_socket` (送り手の herdr の socket)、`sent_at` が transcript の開始以降、の 3 つが合うときだけその pane のものとみなす。transcript が空か壊れていて開始時刻が分からない pane には帰属させない。`from_socket` の無い旧形式は帰属させない (別 session の同じ pane id と区別できないため)
 
+## インストール
+
+Release の asset (`herdr-timeline-<target>` と `.sha256`) を取って検証し、実行権限を付けて置く。target は `x86_64-unknown-linux-gnu` か `aarch64-apple-darwin`。tag は `herdr-timeline/v<version>`。
+
+```bash
+gh release download herdr-timeline/v<version> --repo nekottyo/agent-tools --pattern 'herdr-timeline-<target>*'
+shasum -a 256 -c herdr-timeline-<target>.sha256 \
+  && chmod +x herdr-timeline-<target> \
+  && mkdir -p "$HOME/.cargo/bin" \
+  && mv herdr-timeline-<target> "$HOME/.cargo/bin/herdr-timeline"
+```
+
+`$HOME/.cargo/bin` が PATH に無いときは、`export PATH="$HOME/.cargo/bin:$PATH"` を shell の設定に足すか、`"$HOME/.cargo/bin/herdr-timeline"` とフルパスで呼ぶ。
+
+`cargo install --path herdr-timeline --locked` でも入れられる。
+
 ## 使い方
 
 ```
