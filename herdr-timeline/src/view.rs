@@ -653,8 +653,7 @@ mod tests {
     fn timeline_body_grows_to_column_width() {
         let out = timeline_lines(&[long_ev()], 200, false, 0, 1000, &|_| 0);
         let w = visible_width(&out[0]);
-        assert!(w > 40 + 10, "本文が 40 桁を超えて出るはず: {out:?}");
-        assert!(w <= TL_COL_MAX, "列幅の上限内のはず: {w}");
+        assert_eq!(w, TL_COL_MAX, "本文が列幅の上限まで出るはず: {out:?}");
     }
 
     #[test]
