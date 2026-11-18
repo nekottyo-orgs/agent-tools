@@ -58,7 +58,7 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
   Enter     選んだ行の tab へ移動する (herdr tab focus)
   Esc / q   終了する (Ctrl-C でも端末を戻して終わる)
 
-選んだ行の Timeline は一覧と一緒に常に出す (幅 120 以上は右、未満は下)。
+選んだ行の Timeline は一覧と一緒に常に出す (端末が 121 桁以上は右、未満は下)。
 
 環境変数:
   HERDR_TIMELINE_HERDR      herdr コマンド (既定 herdr、空白区切りで分割)
@@ -375,6 +375,29 @@ fn initial_select(caller: &str, panes: &[PaneRow], rows: &[Row], own_sock: &str)
         .map(|r| r.key.clone())
 }
 
+/// 一覧に使う (幅, 高さ)。並べるときは一覧の幅、積むときは一覧の高さまでに収める。
+/// Timeline を出すのは tty のときだけなので、非 tty は split を使わず従来どおり全幅・全高で描く
+fn list_dims(tty: bool, sp: &Split, width: usize, body_h: usize) -> (usize, usize) {
+    if !tty {
+        return (width, body_h);
+    }
+    match *sp {
+        Split::Side { list_w, .. } => (list_w, body_h),
+        Split::Stack { list_h, .. } => (width, list_h),
+    }
+}
+
+/// poll の待ち (ms)。ESC の直後は続きが来るか見分けるため、left に関係なく ESC 用の待ちにする。
+/// ssh 越しだと矢印の続きが別の read に分かれて遅れて届くので 100ms 待つ。deadline を超えて待ってよい
+/// (left が 0 近くで wait が 0 になると poll が即返り、続きを待たず ESC 単独と誤る)
+fn esc_wait(pending: bool, left_ms: u64) -> i32 {
+    if pending {
+        100
+    } else {
+        left_ms.min(200) as i32
+    }
+}
+
 fn interactive(env: &Env, o: &Opts, color: bool) {
     for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
         // SAFETY: handler は AtomicBool を立てるだけで async-signal-safe
@@ -427,11 +450,7 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
                 let width = term_width(o.width);
                 let body_h = height - usize::from(tty);
                 let sp = split(width, body_h);
-                // 並べるときは一覧の幅、積むときは一覧の高さまでに収めて layout する
-                let (list_w, list_h) = match sp {
-                    Split::Side { list_w, .. } => (list_w, body_h),
-                    Split::Stack { list_h, .. } => (width, list_h),
-                };
+                let (list_w, list_h) = list_dims(tty, &sp, width, body_h);
                 let v = View {
                     rows: &rows,
                     runs: &snap.runs,
@@ -485,9 +504,8 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
             if left.is_zero() {
                 break;
             }
-            // signal の flag を見るため、待ちは 200ms ずつに区切る。ESC の直後は続きが来るか短く待って見分ける
-            let slice = if parser.pending() { 50 } else { 200 };
-            let wait = left.min(Duration::from_millis(slice)).as_millis() as i32;
+            // signal の flag を見るため、待ちは 200ms ずつに区切る。ESC の直後だけ別の待ち (esc_wait)
+            let wait = esc_wait(parser.pending(), left.as_millis() as u64);
             if !tty {
                 std::thread::sleep(Duration::from_millis(wait as u64));
                 continue;
@@ -682,6 +700,33 @@ mod tests {
         assert_eq!(sel(""), None, "空は無視するはず");
         assert_eq!(sel("wA:p1\x1b[2J"), None, "制御文字を含む値は無視するはず");
         assert_eq!(sel(&"w".repeat(65)), None, "長すぎる値は無視するはず");
+    }
+
+    #[test]
+    fn esc_wait_is_fixed_while_pending_even_if_no_time_left() {
+        assert_eq!(
+            esc_wait(true, 0),
+            100,
+            "ESC 待ちは left が 0 でも 100ms のはず"
+        );
+        assert_eq!(esc_wait(true, 5000), 100, "ESC 待ちは left に依らないはず");
+        assert_eq!(esc_wait(false, 50), 50, "通常は left までのはず");
+        assert_eq!(esc_wait(false, 5000), 200, "通常は 200ms で区切るはず");
+    }
+
+    #[test]
+    fn list_dims_uses_full_size_without_tty() {
+        let sp = split(150, 30);
+        assert!(matches!(sp, Split::Side { .. }), "広いと並ぶはず");
+        assert_eq!(
+            list_dims(false, &sp, 150, 30),
+            (150, 30),
+            "非 tty は全幅・全高のはず"
+        );
+        assert!(
+            list_dims(true, &sp, 150, 30).0 < 150,
+            "tty の並びは一覧の幅に絞るはず"
+        );
     }
 
     #[test]
