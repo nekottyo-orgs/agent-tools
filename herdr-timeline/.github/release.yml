@@ -3,9 +3,8 @@ changelog:
     labels:
       # tool に属さない変更 (ADR、CI、設定) は release notes に載せない
       - skip-changelog
-    authors:
-      # 他 tool の release PR (tagpr が作る) を載せない
-      - nekottyo-bot
+      # 他 tool の release PR。tagpr が付ける label で除く (bot の author 指定は効かなかった)
+      - tagpr
   categories:
     - title: Changes
       labels:
