@@ -176,7 +176,8 @@ fn width_for(fixed: Option<usize>, cols: usize) -> usize {
 }
 
 /// 経過の起点。herdr は状態の開始時刻を返さないので、blocked は transcript の最終書き込み
-/// (止まった時刻に近い)、working は viewer が working を見始めた時刻 (≥ を付ける)
+/// (止まった時刻に近い)、working は transcript の最後の turn の時刻。transcript が読めないときだけ
+/// viewer が working を見始めた時刻 (≥ を付ける)
 struct Seen(HashMap<String, (String, i64)>);
 
 impl Seen {
@@ -199,6 +200,11 @@ impl Seen {
                     *e = (p.status.clone(), now);
                 }
                 let working = p.status == "working";
+                let turn = if working {
+                    briefs.turn_start(p, dirs)
+                } else {
+                    None
+                };
                 Row {
                     key: p.key.clone(),
                     tag: p.tag.clone(),
@@ -206,13 +212,13 @@ impl Seen {
                     name: p.name.clone(),
                     work: summary(&briefs.pane_goal(p, dirs, &progress), &p.title),
                     since: if working {
-                        Some(e.1)
+                        Some(turn.unwrap_or(e.1))
                     } else if p.status == "blocked" {
                         transcript_mtime(dirs, p.sid.as_deref())
                     } else {
                         None // 畳んだ行は経過を出さないので stat もしない
                     },
-                    approx: working,
+                    approx: working && turn.is_none(),
                     tab_id: p.tab_id.clone(),
                     ws: p.ws.clone(),
                 }

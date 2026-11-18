@@ -623,6 +623,20 @@ fn instr_brief(l: &Line) -> Option<(i64, Option<String>)> {
     matches!(core::classify(c), Class::Instr | Class::Paste).then(|| (ts, brief_path(c)))
 }
 
+/// 新しい turn の始まり。tool result (content が配列) と compact の要約・meta・sidechain・skip 対象は数えない。
+/// auto-handover の「続けて」は通常の入力として届くので数える (実 transcript で確認)
+fn is_turn(l: &Line) -> bool {
+    if l.typ != "user" || core::excluded(l) {
+        return false;
+    }
+    l.content.as_deref().is_some_and(|c| {
+        matches!(
+            core::classify(c),
+            Class::Instr | Class::Paste | Class::HerdrMsg
+        )
+    })
+}
+
 /// 解析結果のキャッシュ。開いている Timeline は 1 つなので 1 件だけ持つ
 #[derive(Default)]
 pub struct Transcripts {
@@ -673,6 +687,8 @@ pub struct BriefTracker {
     pub first_ts: Option<i64>,
     pub last_brief: Option<String>,
     pub last_brief_ts: Option<i64>,
+    /// 最後に pane が受けた入力 (人の指示・貼り付け・他 pane からの message) の時刻。working の経過の起点
+    pub last_turn_ts: Option<i64>,
 }
 
 /// 全 pane の行にゴールと進捗を出すための軽い追跡。Timeline 用の 1 件キャッシュ (Transcripts) とは別に持つ
@@ -702,6 +718,9 @@ impl Briefs {
         for l in parse_lines(&buf[..end]) {
             let Some(ts) = l.ts else { continue };
             t.first_ts = Some(t.first_ts.map_or(ts, |f| f.min(ts)));
+            if is_turn(&l) {
+                t.last_turn_ts = Some(t.last_turn_ts.map_or(ts, |p| p.max(ts)));
+            }
             if let Some((ts, b @ Some(_))) = instr_brief(&l) {
                 t.last_brief = last_brief(&[t.last_brief.take(), b]);
                 t.last_brief_ts = Some(ts);
@@ -746,6 +765,12 @@ impl Briefs {
             status: Some(status(&steps, &ps)),
             steps,
         }
+    }
+
+    /// working の経過の起点。transcript の最後の turn の時刻。読めない・turn が無いときは None
+    pub fn turn_start(&mut self, row: &PaneRow, dirs: &[PathBuf]) -> Option<i64> {
+        let p = find_transcript(dirs, row.sid.as_deref())?;
+        self.scan(&p)?.last_turn_ts
     }
 
     /// pane 行のゴール。progress は read_msgs(.., true) で読んだ msg
@@ -982,6 +1007,48 @@ mod tests {
             transcript_events(Some(&parse_lines(&bad))).len(),
             1,
             "途中の行が UTF-8 でなくても他の行は読むはず"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn turn_start_follows_last_input_only() {
+        let d = tmp("turn");
+        let f = d.join("s.jsonl");
+        let user = |at: &str, content: &str, extra: &str| {
+            format!(
+                r#"{{"type":"user","timestamp":"{at}",{extra}"message":{{"content":{content}}}}}"#
+            ) + "\n"
+        };
+        let mut s = user("2026-01-02T03:00:00Z", r#""直して""#, "");
+        // tool result (配列)、compact の要約、meta は turn でない
+        s += &user("2026-01-02T03:10:00Z", r#"[{"type":"tool_result"}]"#, "");
+        s += &user(
+            "2026-01-02T03:11:00Z",
+            r#""要約""#,
+            r#""isCompactSummary":true,"#,
+        );
+        s += &user("2026-01-02T03:12:00Z", r#""meta""#, r#""isMeta":true,"#);
+        fs::write(&f, &s).unwrap();
+        let mut b = Briefs::default();
+        let t0 = parse_time("2026-01-02T03:00:00Z");
+        assert_eq!(
+            b.scan(&f).unwrap().last_turn_ts,
+            t0,
+            "人の指示だけが turn のはず"
+        );
+        // auto-handover の「続けて」は通常の入力なので新しい turn
+        let l = user("2026-01-02T03:20:00Z", r#""続けて""#, "");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&f)
+            .unwrap()
+            .write_all(l.as_bytes())
+            .unwrap();
+        assert_eq!(
+            b.scan(&f).unwrap().last_turn_ts,
+            parse_time("2026-01-02T03:20:00Z"),
+            "「続けて」は新しい turn のはず"
         );
         let _ = fs::remove_dir_all(&d);
     }
