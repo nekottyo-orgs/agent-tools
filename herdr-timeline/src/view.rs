@@ -52,13 +52,26 @@ pub fn paint(color: bool, s: &str, code: &str) -> String {
     }
 }
 
+// herdr 本体の status_indicators = "symbols" (src/client/shell.rs の status_icon、v0.9.5) と同じ記号。
+// 既定の "dots" は blocked / working / done がどれも ● で、色が出ない端末では区別できないので symbols 側に揃える
 fn symbol(status: &str) -> &'static str {
     match status {
-        "blocked" => "▲",
-        "working" => "●",
+        "blocked" => "×",
+        "working" => "◐",
         "idle" => "○",
         "done" => "✓",
-        _ => "?",
+        _ => "·",
+    }
+}
+
+// herdr 本体の status_color (同ファイル) と同じ対応。palette の yellow / red / teal / green / overlay0 を ANSI の 33 / 31 / 36 / 32 / dim に当てる
+fn status_style(status: &str) -> &'static str {
+    match status {
+        "blocked" => "31",
+        "working" => "33",
+        "idle" => "32",
+        "done" => "36",
+        _ => "2",
     }
 }
 
@@ -138,12 +151,30 @@ pub fn step_line(d: &Goal, width: usize) -> Option<String> {
     Some(clip(&line, width))
 }
 
+/// tally の行を薄く塗り、中の記号だけを状態の色に戻す。記号と件数が折り返しで分かれた行は塗り分けない
+fn tint_tally(rows: &[&Row], part: &str, color: bool) -> String {
+    let mut s = paint(color, part, "2");
+    if color {
+        for k in ["done", "idle", "unknown"] {
+            let n = rows.iter().filter(|x| x.status == k).count();
+            if n > 0 {
+                let icon = paint(true, symbol(k), status_style(k));
+                s = s.replace(
+                    &format!("{} {n}", symbol(k)),
+                    &format!("\x1b[0m{icon}\x1b[2m {n}"),
+                );
+            }
+        }
+    }
+    s
+}
+
 fn tally(rows: &[&Row]) -> String {
     let c = |s: &str| rows.iter().filter(|x| x.status == s).count();
-    [("done", "done"), ("idle", "idle"), ("unknown", "不明")]
+    ["done", "idle", "unknown"]
         .iter()
-        .filter(|(k, _)| c(k) > 0)
-        .map(|(k, l)| format!("{l} {}", c(k)))
+        .filter(|k| c(k) > 0)
+        .map(|k| format!("{} {}", symbol(k), c(k)))
         .collect::<Vec<_>>()
         .join("  ")
 }
@@ -281,7 +312,13 @@ pub fn layout(v: &View) -> (Vec<String>, Vec<(String, String)>, Option<String>) 
                 String::new()
             };
             let lead = if first {
-                format!("{key}{} ", symbol(&x.status))
+                // whole の行は行全体が赤太字なので、記号だけを塗ると途中で色が切れる
+                let sym = if whole {
+                    symbol(&x.status).to_string()
+                } else {
+                    paint(symbol(&x.status), status_style(&x.status))
+                };
+                format!("{key}{sym} ")
             } else {
                 " ".repeat(key_w as usize + 2)
             };
@@ -402,13 +439,13 @@ pub fn layout(v: &View) -> (Vec<String>, Vec<(String, String)>, Option<String>) 
             );
             let mut b = vec![format!(
                 "  {}",
-                paint(parts.first().map_or("", String::as_str), "2")
+                tint_tally(rs, parts.first().map_or("", String::as_str), v.color)
             )];
             b.extend(
                 parts
                     .iter()
                     .skip(1)
-                    .map(|c| format!("    {}", paint(c, "2"))),
+                    .map(|c| format!("    {}", tint_tally(rs, c, v.color))),
             );
             blocks.push(b);
         }
@@ -561,6 +598,87 @@ mod tests {
         assert!(
             step_line(&Goal::default(), 200).is_none(),
             "steps が無ければ出さないはず"
+        );
+    }
+
+    #[test]
+    fn symbols_match_herdr_and_are_distinct_without_color() {
+        let all = ["blocked", "working", "done", "idle", "unknown"];
+        let got: Vec<&str> = all.iter().map(|s| symbol(s)).collect();
+        assert_eq!(
+            got,
+            ["×", "◐", "✓", "○", "·"],
+            "herdr の symbols と同じ記号のはず"
+        );
+        let mut uniq = got.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(
+            uniq.len(),
+            all.len(),
+            "色が無くても記号だけで区別できるはず"
+        );
+        assert_eq!(
+            symbol("something-else"),
+            "·",
+            "未知の状態は unknown と同じ記号のはず"
+        );
+    }
+
+    #[test]
+    fn tally_uses_icons_not_words() {
+        let rows = [
+            row("a", "done", "p1", None),
+            row("b", "idle", "p2", None),
+            row("c", "idle", "p3", None),
+            row("d", "unknown", "p4", None),
+        ];
+        let refs: Vec<&Row> = rows.iter().collect();
+        assert_eq!(
+            tally(&refs),
+            "✓ 1  ○ 2  · 1",
+            "文字でなく記号と件数を出すはず"
+        );
+        let tinted = tint_tally(&refs, "ws  ✓ 1  ○ 2  · 1", true);
+        assert!(
+            tinted.contains("\x1b[36m✓\x1b[0m") && tinted.contains("\x1b[32m○\x1b[0m"),
+            "色ありなら記号が状態の色になるはず: {tinted:?}"
+        );
+        assert!(
+            !tint_tally(&refs, "ws  ✓ 1", false).contains('\x1b'),
+            "色なしなら制御文字を出さないはず"
+        );
+    }
+
+    #[test]
+    fn working_row_symbol_is_colored_only_with_color() {
+        let rows = [row("a", "working", "p1", Some("t1"))];
+        let (names, ws) = (HashMap::new(), HashMap::new());
+        let mk = |color| {
+            let v = View {
+                rows: &rows,
+                runs: &[],
+                warn: &[],
+                names: &names,
+                ws_names: &ws,
+                width: 80,
+                color,
+                select: None,
+                height: None,
+                now: 10,
+                expanded: None,
+                off: &|_| 0,
+            };
+            layout(&v).0.join("\n")
+        };
+        assert!(
+            mk(true).contains("\x1b[33m◐\x1b[0m"),
+            "作業中は黄色の ◐ のはず"
+        );
+        let plain = mk(false);
+        assert!(
+            plain.contains('◐') && !plain.contains('\x1b'),
+            "色なしでも ◐ は出るはず: {plain:?}"
         );
     }
 }
