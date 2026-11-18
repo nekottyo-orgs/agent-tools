@@ -169,6 +169,8 @@ pub struct PaneRow {
 
 pub struct Run {
     pub orch: String,
+    /// orchestrator_socket。無い旧形式の run は None (pane id だけで照合する)
+    pub orch_socket: Option<String>,
     pub new: usize,
     pub oldest: Option<i64>,
 }
@@ -379,7 +381,12 @@ fn hide_dispatched(snap: &mut Snapshot, labels: &HashMap<String, String>) {
             socket: r.socket.clone(),
             since: Some(i64::MIN),
         };
-        snap.runs.iter().any(|x| x.orch == r.pane) || msgs.iter().any(|m| attributed(&p, &m.msg))
+        snap.runs.iter().any(|x| {
+            x.orch == r.pane
+                && x.orch_socket
+                    .as_deref()
+                    .is_none_or(|s| canon(s) == canon(&r.socket))
+        }) || msgs.iter().any(|m| attributed(&p, &m.msg))
     };
     let drop: Vec<String> = snap
         .panes
@@ -447,9 +454,15 @@ fn read_runs(dir: &Path, snap: &mut Snapshot) {
             .find_map(|l| l.strip_prefix("orchestrator_pane:"))
             .map(clean)
             .unwrap_or_default();
+        let orch_socket = md
+            .lines()
+            .find_map(|l| l.strip_prefix("orchestrator_socket:"))
+            .map(clean)
+            .filter(|s| !s.is_empty());
         let new = msg_files(&run.join("inbox/new"));
         snap.runs.push(Run {
             orch,
+            orch_socket,
             new: new.len(),
             oldest: new.iter().filter_map(|(_, p)| mtime(p)).min(),
         });

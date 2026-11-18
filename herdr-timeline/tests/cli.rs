@@ -419,6 +419,37 @@ fn dispatched_pane_shown_when_orchestrator_pane() {
 }
 
 #[test]
+fn dispatched_pane_shown_when_orchestrator_socket_matches() {
+    let fx = dispatched_fx("dispatched-orch-sock");
+    fx.write(
+        "runs/r1/run.md",
+        &format!(
+            "# run\norchestrator_pane: wA:p5\norchestrator_socket: {}\n",
+            fx.sock()
+        ),
+    );
+    let a = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        a.contains("repo-123 の title"),
+        "orchestrator_socket が一致する窓口は出るはず: {a}"
+    );
+}
+
+#[test]
+fn dispatched_pane_hidden_when_orchestrator_socket_differs() {
+    let fx = dispatched_fx("dispatched-orch-other");
+    fx.write(
+        "runs/r1/run.md",
+        "# run\norchestrator_pane: wA:p5\norchestrator_socket: /other/herdr.sock\n",
+    );
+    let a = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        !a.contains("repo-123 の title"),
+        "別 socket の窓口は pane id が同じでも外れるはず: {a}"
+    );
+}
+
+#[test]
 fn dispatched_pane_hidden_when_msg_from_other_socket() {
     let fx = dispatched_fx("dispatched-sock");
     fx.msg(
