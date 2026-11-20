@@ -98,7 +98,7 @@ tail -n 15 "$TMP/build.log"
 
 fail=0
 if [ "$rc" -eq 0 ]; then echo "判定 (a): lake build は exit 0"; else echo "判定 (a): lake build が exit $rc で失敗"; fail=1; fi
-if grep -Eq "declaration uses 'sorry'|sorryAx" "$TMP/build.log"; then echo "判定 (b): sorry が残っている"; fail=1; else echo "判定 (b): sorry なし"; fi
+if grep -Eq "declaration uses ['\`]sorry|sorryAx" "$TMP/build.log"; then echo "判定 (b): sorry が残っている"; fail=1; else echo "判定 (b): sorry なし"; fi
 want="$(cat "$TMP"/proofs/Handoff/*.lean "$TMP"/proofs/InboxCore/*.lean | grep -c '#print axioms' || true)"
 got="$(grep -c 'depends on axioms' "$TMP/build.log" || true)"
 bad="$(grep 'depends on axioms' "$TMP/build.log" | grep -Evc '\[(propext|Classical\.choice|Quot\.sound)(, (propext|Classical\.choice|Quot\.sound))*\]$' || true)"
@@ -108,7 +108,7 @@ else
   echo "判定 (c): axioms の行数 $got が #print axioms の数 $want と合わないか、許可外の axiom がある (許可外 $bad 行)"
   fail=1
 fi
-echo "定理の数: $(cat "$TMP"/proofs/Handoff/*.lean "$TMP"/proofs/InboxCore/Proofs.lean "$TMP"/proofs/InboxCore/Effects.lean | grep -Ec '^(theorem|lemma) ' || true)"
+echo "定理の数: $(cat "$TMP"/proofs/Handoff/*.lean "$TMP"/proofs/InboxCore/Proofs.lean "$TMP"/proofs/InboxCore/Effects.lean "$TMP"/proofs/InboxCore/Stalled.lean | grep -Ec '^(theorem|lemma) ' || true)"
 
 after="$(readlink "$MISE_RUST" || true)"
 if [ "$before" != "$after" ]; then echo "判定: mise rust 1.98.0 の symlink が変わった (前 $before / 後 $after)"; exit 1; fi
