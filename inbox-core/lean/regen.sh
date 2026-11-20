@@ -108,7 +108,7 @@ else
   echo "判定 (c): axioms の行数 $got が #print axioms の数 $want と合わないか、許可外の axiom がある (許可外 $bad 行)"
   fail=1
 fi
-echo "定理の数: $(cat "$TMP"/proofs/Handoff/*.lean "$TMP"/proofs/InboxCore/Proofs.lean "$TMP"/proofs/InboxCore/Effects.lean "$TMP"/proofs/InboxCore/Stalled.lean | grep -Ec '^(theorem|lemma) ' || true)"
+echo "定理の数: $(cat "$TMP"/proofs/Handoff/*.lean "$TMP"/proofs/InboxCore/Proofs.lean "$TMP"/proofs/InboxCore/Effects.lean "$TMP"/proofs/InboxCore/Stalled.lean "$TMP"/proofs/InboxCore/Lane.lean | grep -Ec '^(theorem|lemma) ' || true)"
 
 after="$(readlink "$MISE_RUST" || true)"
 if [ "$before" != "$after" ]; then echo "判定: mise rust 1.98.0 の symlink が変わった (前 $before / 後 $after)"; exit 1; fi

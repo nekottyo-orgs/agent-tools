@@ -10,6 +10,7 @@
 | `InboxCore/InboxCore.lean` | `lib.rs` の Lean 訳 | Aeneas の生成物。手で直さない |
 | `InboxCore/Proofs.lean`、`InboxCore/Effects.lean` | 生成された `step` / `plan` についての定理と `#print axioms` | 手書き |
 | `InboxCore/Stalled.lean` | 停止の検出 `stalled` の Nat の上の仕様と、生成物がそれに一致することの定理 | 手書き |
+| `InboxCore/Lane.lean` | 再送の段 `resend_step` の定理と、lane の照合 `next_lane` の仕様 `laneSpec`、生成物がそれに一致することと収束の定理 | 手書き |
 | `lib.rs.sha256` | 最後に証明が通った `lib.rs` の sha256 | `regen.sh --update` |
 | `regen.sh` | 生成、生成物との差の検査、`lake build`、合否の判定 | |
 
@@ -28,7 +29,7 @@ CI はこの環境を持たないので、`.github/workflows/inbox-core.yml` が
 
 ## 証明した範囲
 
-生成された `step` / `plan` についての定理は 15 本、`stalled` についての定理は U64 の演算の補題 4 本を含めて 8 本で、どれも `#print axioms` が `propext` / `Classical.choice` / `Quot.sound` だけを返す (補題 4 本は `[propext, Quot.sound]`)。`Handoff/Model.lean`、`Handoff/Post.lean` の model 側の定理と補題を含めた 47 本 (`regen.sh` の「定理の数」) のどれにも `sorry` は無い (`regen.sh` が判定する)。
+生成された `step` / `plan` についての定理は 15 本、`stalled` についての定理は U64 の演算の補題 4 本を含めて 8 本、`resend_step` / `next_lane` についての定理は補題を含めて 21 本で、どれも `#print axioms` が `propext` / `Classical.choice` / `Quot.sound` だけを返す (U64 の補題 4 本と `ite_ok`、`laneTrace_*`、`laneRank_le` は `[propext, Quot.sound]`、`laneSpec_terminal` は `[propext]`)。`Handoff/Model.lean`、`Handoff/Post.lean` の model 側の定理と補題を含めた 68 本 (`regen.sh` の「定理の数」) のどれにも `sorry` は無い (`regen.sh` が判定する)。
 
 - `step_total`、`plan_total`: 生成された `step` と `plan` は失敗しない (`plan` の副作用は 3 個以下)
 - `step_refines`: `step` の判定は model の Step の遷移と一致する。タグが model にあるもの (`InModel`) に限る
@@ -46,7 +47,28 @@ CI はこの環境を持たないので、`.github/workflows/inbox-core.yml` が
 - `stalled_sound`: `stalled` が停止を返すなら、`idle` で 0 < t0 かつ t0 + min*60 ≤ now で、起点が Report であることと `assign ≤ report` は同値。溢れは fail になるので前提は要らない
 - `u64_mul_ok`、`u64_add_ok`、`u64_mul_fail`、`u64_add_fail`: 上の証明が使う、U64 の `*` / `+` が範囲内で ok、範囲外で fail を返すことの等式
 
-この範囲に公平性と有限性の前提は無い (`stalled` は 1 回の判定で、時間の経過を扱わない)。
+`resend_step` は U64 を持たないので、仕様を置かず生成物の上で直接示す。
+
+- `resend_step_total`: 生成された `resend_step` は失敗しない
+- `resend_enter_iff`: 段 1 (Enter) を返すのは、`¬tried` かつ Claude かつ `¬enter_used` かつ入力欄が下書きで `¬pasted` かつ `own` かつ未実行 (`Undelivered`) のときだけ。実行済みの文を Enter で二重に実行しない
+- `resend_nudge_iff`: 催促 (Nudge) を返すのは、`tried` かつ `¬last_nudge` かつ `¬nudge_sent` かつ `¬blocked` かつ Claude かつ `¬overdue` かつ入力欄が空のときだけ
+- `resend_exhausted_iff`: Exhausted を返すのは、`tried` かつ (`last_nudge` か `nudge_sent` か `blocked`) のときだけ
+- `resend_overdue_no_nudge`: `overdue` なら催促しない (D7)
+- `resend_tried_no_enter`: `tried` なら Enter を返さない。段 1 を使ったことを台帳に残して `tried` として渡すのは外殻なので、1 通に 1 回になることまでは示していない
+
+`next_lane` は `Lane.lean` の `laneSpec` (lib.rs の判定を上から並べた Bool と Option の上の関数。`over_cap` の値は引数 oc に括り出す) に照らす。
+
+- `over_cap_eq`: 生成された `over_cap` は失敗せず、`detected ∧ seen ∧ ¬cleared ∧ detected_at + cap*60 ≤ now` (Nat の上) を返す。前提は溢れだけで、`detected ∧ seen ∧ ¬cleared` のとき `detected_at + cap*60 ≤ U64.max`
+- `next_lane_refines`: 同じ前提で、生成された `next_lane` は失敗せず、`laneSpec` に `over_cap_eq` の値を渡した結果を返す
+- `laneSpec_terminal`、`next_lane_terminal`: done / human_action からは移さない。生成物の側は `over_cap` を計算しないので溢れの前提は要らない
+- `laneSpec_dest_ne`、`next_lane_dest_ne`: 移すなら行き先は元の lane と違う
+- `laneSpec_converges`、`next_lane_converges`: 事実と oc (生成物の側は now と cap) を固定して繰り返すと、3 回以内に移さない lane に着き、通った lane に戻らない (`../tests/lane.rs` の全数の試験と同じ主張)。生成物の側の 1 歩は、`next_lane` が `ok (some m)` を返すときの `m.dest` で与える
+- `next_lane_step_exists`: 上の 1 歩を与える関係を満たす関数は在る (`next_lane_converges` の前提が空でない)
+- `laneSpec_rank_lt`、`laneRank_le`: 上の証明が使う、1 歩ごとに真に減る順位 `laneRank` (3 以下)。human_decision は判断待ちなら 0 でなければ 3、todo は pane が生きていれば 2 でなければ 1、worker はその逆、done / human_action は 0
+- `laneTrace_rank_le`、`laneTrace_nodup`、`laneTrace_stops`: 真に減る順位があれば、繰り返しの列は重ならず、順位以上の回数で止まる
+- `ite_ok`: `next_lane_refines` が使う、`if c then ok a else ok b = ok (if c then a else b)`
+
+この範囲に公平性と有限性の前提は無い (`stalled` と `next_lane` は 1 回の判定で、時間の経過を扱わない。`next_lane` の収束は事実を固定した繰り返しについての主張)。
 
 ## 前提の名前
 
@@ -62,7 +84,6 @@ CI はこの環境を持たないので、`.github/workflows/inbox-core.yml` が
 
 - 受信待ちの停止 (issue 41 の穴 2 の残り): `Fault.watchDie` の後は `armed` が落ち、次に届いた msg を watch は通知しない。直したのは fire の guard だけで、この経路は残る。言えるのは `post_watchDie_rearm` の「張り直しが 1 回走れば new/ を全て見せるか受信待ちを張り直す」までで、張り直しが走ることは A8 の仮定
 - token ファイルの掃除 (issue 41 の穴 1): `Step.sweep` は「消しうる」だけを表す。model に時間が無いので、実装の lease 期限 (24 時間) が過ぎれば必ず消える、とは言っていない。次の claim が来なければ、孤立したファイルは残り続ける
-- `lib.rs` の `next_lane` / `resend_step` (取り込み側の lane の照合、再送の段の判定) は Lean に翻訳されて build に通るが、まだ定理が無い。適合の根拠は `../tests/` の全数の試験だけ
 
 ## 証明の外
 
