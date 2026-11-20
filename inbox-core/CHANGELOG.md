@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.2.1](https://github.com/nekottyo/agent-tools/compare/inbox-core/v0.2.0...inbox-core/v0.2.1) - 2026-11-20
+
+### Changes
+- feat(inbox-core): stalled の生成物が Nat の上の仕様に一致することを証明する by @nekottyo in https://github.com/nekottyo/agent-tools/pull/46
+- feat(inbox-core): resend_step と next_lane の生成物についての定理を足す by @nekottyo in https://github.com/nekottyo/agent-tools/pull/48
+- feat(inbox-core): 上限 T の 1 回目を worker の差し替えに回す遷移を足す by @nekottyo in https://github.com/nekottyo/agent-tools/pull/51
+
 ## [v0.2.0](https://github.com/nekottyo/agent-tools/compare/inbox-core/v0.1.0...inbox-core/v0.2.0) - 2026-11-20
 
 ### Changes
