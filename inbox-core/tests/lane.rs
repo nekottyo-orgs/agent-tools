@@ -113,3 +113,176 @@ fn stalled_の境界() {
         Stall::Stalled(Origin::Assign)
     ));
 }
+
+fn base(panes: Panes) -> TaskFacts {
+    TaskFacts {
+        panes,
+        idle: false,
+        working: false,
+        close_failed: false,
+        accepted: false,
+        req_accepted: false,
+        remaining: Remaining::Other,
+        waiting: false,
+        answered: false,
+        detected: false,
+        detected_at: 0,
+        seen: false,
+        cleared: false,
+    }
+}
+
+fn mv(from: Lane, f: TaskFacts) -> Option<(usize, usize)> {
+    let (now, cap) = (100_000u64, 30u64);
+    next_lane(from, f, now, cap).map(|m| (m.rule as usize, idx(m.dest)))
+}
+
+// 収束の試験は規則の枝を消しても通るので、規則ごとの行き先と、条件が重なったときに勝つ規則を当てる
+#[test]
+fn next_lane_の規則と優先順() {
+    use Rule::*;
+    let (now, cap) = (100_000u64, 30u64);
+    let at = |r: Rule, l: Lane| Some((r as usize, idx(l)));
+
+    // StallCap: 最初の検出からちょうど cap 分で移し、1 秒足りなければ移さない
+    let stall = TaskFacts {
+        idle: true,
+        detected: true,
+        seen: true,
+        detected_at: now - cap * 60,
+        ..base(Panes::Live)
+    };
+    assert_eq!(mv(Lane::Worker, stall), at(StallCap, Lane::HumanAction));
+    assert_eq!(
+        mv(
+            Lane::Worker,
+            TaskFacts {
+                detected_at: now - cap * 60 + 1,
+                ..stall
+            }
+        ),
+        None
+    );
+    assert_eq!(
+        mv(
+            Lane::Worker,
+            TaskFacts {
+                cleared: true,
+                ..stall
+            }
+        ),
+        None
+    );
+
+    // PaneGone は worker の pane が無いときだけ。受け入れ済みなら SettleGone が勝つ
+    assert_eq!(
+        mv(Lane::Worker, base(Panes::Absent)),
+        at(PaneGone, Lane::Todo)
+    );
+    assert_eq!(mv(Lane::Todo, base(Panes::Absent)), None);
+    let gone = TaskFacts {
+        accepted: true,
+        ..base(Panes::Closed)
+    };
+    assert_eq!(
+        mv(
+            Lane::Worker,
+            TaskFacts {
+                panes: Panes::Absent,
+                ..gone
+            }
+        ),
+        at(SettleGone, Lane::HumanAction)
+    );
+    assert_eq!(
+        mv(
+            Lane::Todo,
+            TaskFacts {
+                remaining: Remaining::Empty,
+                ..gone
+            }
+        ),
+        at(SettleGone, Lane::Done)
+    );
+    assert_eq!(
+        mv(
+            Lane::Todo,
+            TaskFacts {
+                waiting: true,
+                ..gone
+            }
+        ),
+        at(SettleGone, Lane::HumanDecision)
+    );
+
+    // SettleDone は StallCap の条件が揃っていても勝つ
+    let done = TaskFacts {
+        req_accepted: true,
+        remaining: Remaining::Nothing,
+        ..stall
+    };
+    assert_eq!(mv(Lane::Worker, done), at(SettleDone, Lane::Done));
+    assert_eq!(
+        mv(
+            Lane::Worker,
+            TaskFacts {
+                close_failed: true,
+                ..done
+            }
+        ),
+        at(StallCap, Lane::HumanAction)
+    );
+
+    // Waiting は StallCap と Live に勝つ
+    assert_eq!(
+        mv(
+            Lane::Worker,
+            TaskFacts {
+                waiting: true,
+                ..stall
+            }
+        ),
+        at(Waiting, Lane::HumanDecision)
+    );
+    assert_eq!(
+        mv(
+            Lane::Todo,
+            TaskFacts {
+                waiting: true,
+                ..base(Panes::Live)
+            }
+        ),
+        at(Waiting, Lane::HumanDecision)
+    );
+
+    // Answered は判断待ちが残っていれば移さない
+    let ans = TaskFacts {
+        answered: true,
+        ..base(Panes::Live)
+    };
+    assert_eq!(mv(Lane::HumanDecision, ans), at(Answered, Lane::Todo));
+    assert_eq!(
+        mv(
+            Lane::HumanDecision,
+            TaskFacts {
+                waiting: true,
+                ..ans
+            }
+        ),
+        None
+    );
+
+    // Live: 回答済みで working でない todo は残す
+    assert_eq!(mv(Lane::Todo, base(Panes::Live)), at(Live, Lane::Worker));
+    assert_eq!(mv(Lane::Todo, ans), None);
+    assert_eq!(
+        mv(
+            Lane::Todo,
+            TaskFacts {
+                working: true,
+                ..ans
+            }
+        ),
+        at(Live, Lane::Worker)
+    );
+}
