@@ -264,11 +264,12 @@ theorem post_progress_claim : ∃ s, Reach Config.post wOk s ∧ ∃ x, s.cue 0 
   exact ⟨_, r5, { d2 with claim := none, done := true }, by simp, rfl⟩
 
 /-- [escalation] を reply で cur へ移せる -/
-theorem post_progress_reply : ∃ s, Reach Config.post wOk s ∧ ∃ x, s.msgs 0 = some x ∧ x.box = .cur := by
+theorem post_progress_reply : ∃ s, Reach Config.post wOk s ∧ s.replied 0 = true ∧
+    ∃ x, s.msgs 0 = some x ∧ x.box = .cur ∧ x.tag = .escalation ∧ x.res = .replied := by
   let s1 : State := { init with msgs := upd init.msgs 0 (some (newMsg .escalation 2)) }
   have r1 : Reach Config.post wOk s1 := Reach.step Reach.init (Step.send init 0 .escalation 2 rfl)
   have r2 := Reach.step r1 (Step.reply s1 0 (newMsg .escalation 2) (by simp [s1]) (by simp [newMsg]) rfl)
-  exact ⟨_, r2, toCur (newMsg .escalation 2) .replied, by simp, rfl⟩
+  exact ⟨_, r2, by simp [upd], toCur (newMsg .escalation 2) .replied, by simp, rfl, rfl, rfl⟩
 
 /-! ### 状態の一元化 -/
 

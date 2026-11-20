@@ -114,8 +114,12 @@ after="$(readlink "$MISE_RUST" || true)"
 if [ "$before" != "$after" ]; then echo "判定: mise rust 1.98.0 の symlink が変わった (前 $before / 後 $after)"; exit 1; fi
 [ "$fail" -eq 0 ] || { echo "判定: 失敗"; exit 1; }
 
-# lib.rs の記録
-h="$(sha "$LIB")"
+# lib.rs の記録。証明したのは冒頭で一時側へ写した lib.rs なので、その写しの sha256 を残す
+h="$(sha "$TMP/crate/src/lib.rs")"
+if [ "$(sha "$LIB")" != "$h" ]; then
+  echo "判定: lib.rs が検証中に変わった。再実行が必要"
+  exit 1
+fi
 echo "lib.rs sha256: $h"
 if [ "$update" -eq 1 ]; then
   echo "$h" >"$HERE/lib.rs.sha256"
