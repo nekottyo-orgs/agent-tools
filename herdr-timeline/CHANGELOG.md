@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.1.2](https://github.com/nekottyo/agent-tools/compare/herdr-timeline/v0.1.1...herdr-timeline/v0.1.2) - 2026-11-20
+
+### Changes
+- feat(herdr-timeline): --json に queue を足し、キュー待ちの入力と届いた入力を分ける by @nekottyo in https://github.com/nekottyo/agent-tools/pull/49
+
 ## [v0.1.1](https://github.com/nekottyo/agent-tools/compare/herdr-timeline/v0.1.0...herdr-timeline/v0.1.1) - 2026-11-18
 
 ### Changes
