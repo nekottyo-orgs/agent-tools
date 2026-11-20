@@ -51,7 +51,8 @@ theorem resend_overdue_no_nudge (f : inbox_core.ResendFacts) (h : f.overdue = tr
     inbox_core.resend_step f ≠ ok .Nudge := by
   rw [Ne, resend_nudge_iff]; simp [h]
 
-/-- 段 1 は 1 通に 1 回 -/
+/-- 外殻が tried = true を渡せば Enter を返さない。段 1 を使ったことを台帳に残し、次の判定で tried に読み直すのは外殻で、
+1 通に 1 回になるかはこの定理の外 -/
 theorem resend_tried_no_enter (f : inbox_core.ResendFacts) (h : f.tried = true) :
     inbox_core.resend_step f ≠ ok .Enter := by
   rw [Ne, resend_enter_iff]; simp [h]

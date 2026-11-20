@@ -54,7 +54,7 @@ CI はこの環境を持たないので、`.github/workflows/inbox-core.yml` が
 - `resend_nudge_iff`: 催促 (Nudge) を返すのは、`tried` かつ `¬last_nudge` かつ `¬nudge_sent` かつ `¬blocked` かつ Claude かつ `¬overdue` かつ入力欄が空のときだけ
 - `resend_exhausted_iff`: Exhausted を返すのは、`tried` かつ (`last_nudge` か `nudge_sent` か `blocked`) のときだけ
 - `resend_overdue_no_nudge`: `overdue` なら催促しない (D7)
-- `resend_tried_no_enter`: `tried` なら Enter を返さない (段 1 は 1 通に 1 回)
+- `resend_tried_no_enter`: `tried` なら Enter を返さない。段 1 を使ったことを台帳に残して `tried` として渡すのは外殻なので、1 通に 1 回になることまでは示していない
 
 `next_lane` は `Lane.lean` の `laneSpec` (lib.rs の判定を上から並べた Bool と Option の上の関数。`over_cap` の値は引数 oc に括り出す) に照らす。
 
