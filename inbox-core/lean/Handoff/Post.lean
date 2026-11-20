@@ -276,4 +276,62 @@ theorem post_progress_reply : ∃ s, Reach Config.post wOk s ∧ s.replied 0 = t
 theorem post_recovery (w : World) : RecoveryProp Config.post w := by
   intro s _; simp [recovery, Config.post]
 
+/-! ### issue 41 の穴 (crash 後の token、newOnly の fire、E5 の見せた内容) -/
+
+/-- 穴 1 の反例の前半: 修正後の形でも、ファイルの公開後・commit 前に crash すると、どの claim にも
+対応しない token ファイルが残る -/
+theorem post_orphan_reachable : ∃ s, Reach Config.post wOk s ∧ s.file 7 = some 0 ∧ s.pending = none ∧
+    ∃ x, s.cue 0 = some x ∧ x.claim = none := by
+  let d0 := newDec wOk 1 .own
+  let s1 : State := { init with cue := upd init.cue 0 (some d0) }
+  let d1 : Dec := { d0 with answered := true }
+  let s2 : State := { s1 with cue := upd s1.cue 0 (some d1) }
+  have r2 : Reach Config.post wOk s2 :=
+    Reach.step (Reach.step Reach.init (Step.add init 1 0 .own .rawQuoted rfl
+      (by simp [Allowed, PreAddOk]))) (Step.answer s1 0 d0 (by simp [s1]) rfl)
+  let s3 : State := { s2 with file := upd s2.file 7 (some 0), pending := some (0, 7) }
+  have r3 : Reach Config.post wOk s3 :=
+    Reach.step r2 (Step.txPublish s2 0 d1 7 rfl ⟨by simp [s2], rfl, rfl, rfl, rfl, rfl⟩ rfl rfl rfl)
+  have r4 := Reach.step r3 (Step.fault (Fault.crash s3))
+  exact ⟨_, r4, by simp [s3], rfl, d1, by simp [s3, s2], rfl⟩
+
+/-- 穴 1: どの claim にも pending にも無い token ファイルは、次の claim の掃除で消せる -/
+theorem post_orphan_sweepable (w : World) (s : State) (t : Tok) (d : DId)
+    (hf : s.file t = some d) (hp : s.pending ≠ some (d, t))
+    (hc : ∀ d' x, s.cue d' = some x → x.claim ≠ some t) :
+    ∃ s', Step Config.post w s s' ∧ s'.file t = none :=
+  ⟨_, Step.sweep s t d rfl hf hp hc, by simp⟩
+
+/-- 穴 2 の反例: 見ていない msg が new/ に無いまま fire でき、行き先は watchDie と同じ状態になる -/
+theorem pre_spurious_fire : ∃ s s', Reach Config.pre wOk s ∧ Step Config.pre wOk s s' ∧
+    s.armed = true ∧ s' = { s with armed := false } := by
+  have r1 : Reach Config.pre wOk { init with armed := true, msgs := unskip init.msgs } :=
+    Reach.step Reach.init (Step.rearm (Rearm.arm init false (by simp [Config.pre])))
+  refine ⟨_, _, r1, Step.fire _ rfl, rfl, ?_⟩
+  simp only [State.mk.injEq]
+  refine ⟨rfl, ?_⟩
+  funext i; rfl
+
+/-- 穴 2: 通知は、new/ にあって seen に無い msg を少なくとも 1 件見せる -/
+theorem notify_shows_unseen : NotifyProp := by
+  intro s s' h
+  cases h with
+  | fire _ hu =>
+    obtain ⟨m, x, hx, hb, hk⟩ := hu
+    exact ⟨m, x, hx, hb, hk, by simp [unseenIds, hx, hb, hk]⟩
+
+/-- 穴 3: 人の発言で new/ を見せない形では E5 が崩れる。証人は既に一度見せた msg で、
+旧 E5 (結果の状態の surfaced を見る) ではこの証人が条件を満たしてしまっていた -/
+theorem e5_needs_humanSurface : ¬ E5Prop { Config.post with humanSurface := false } wOk := by
+  intro h
+  let c : Config := { Config.post with humanSurface := false }
+  let s1 : State := { init with msgs := upd init.msgs 0 (some (newMsg .completion 2)) }
+  have r1 : Reach c wOk s1 := Reach.step Reach.init (Step.send init 0 .completion 2 rfl)
+  have hn : HasNew s1 := ⟨0, newMsg .completion 2, by simp [s1], rfl⟩
+  have r2 := Reach.step r1 (Step.rearm (Rearm.reveal s1 rfl hn))
+  have hx : (showNew s1.msgs) 0 = some { newMsg .completion 2 with surfaced := true } := by
+    simp [showNew, mapMsgs, s1, newMsg]
+  have := (h _ r2 0 _ hx rfl).2 _ (Human.speak _)
+  simp [c, Config.post] at this
+
 end Handoff
