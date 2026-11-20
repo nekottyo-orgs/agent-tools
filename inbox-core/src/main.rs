@@ -527,6 +527,22 @@ mod tests {
                 .unwrap(),
             "replace"
         );
+        // 新しい 3 引数 (replaced_at / woke_at / exhausted) の位置
+        assert_eq!(
+            extra("lane worker live yes no no no no other no no yes 98200 yes no 90000 0 no 100000 30")
+                .unwrap(),
+            "move stall-cap human_action"
+        );
+        assert_eq!(
+            extra("lane worker live yes no no no no other no no yes 99000 yes no 0 0 yes 100000 30")
+                .unwrap(),
+            "replace"
+        );
+        assert_eq!(
+            extra("lane worker live yes no no no no other no no yes 98200 yes no 0 99000 no 100000 30")
+                .unwrap(),
+            "none"
+        );
         // 誤り: bool 語彙外、lane 語彙外、数値の桁あふれ、引数の数
         assert!(extra(&base.replace("live no", "live maybe")).is_none());
         assert!(extra(&base.replacen("todo", "nowhere", 1)).is_none());

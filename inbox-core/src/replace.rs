@@ -1,4 +1,4 @@
-// worker の差し替え (ADR-322)。lib.rs の next_lane (Lean の証明の対象) の結果を包み、上限 T の 1 回目を human_action でなく差し替えに回す。
+// worker の差し替え (ADR-322)。lib.rs の next_lane (Lean の証明の対象) の結果を包み、上限 T の 1 回目と、再送の段を使い切った時点 (T を待たない) を human_action でなく差し替えに回す。
 // lib.rs は sha256 を固定した証明の対象なので、差し替えの遷移はここに置いて next_lane は触らない。
 // 差し替えは lane を動かさない (worker のまま新しい pane に替わる) ので Move でなく別の結果にする。
 use crate::*;
@@ -23,7 +23,7 @@ pub enum Verdict {
 pub fn decide(from: Lane, f: TaskFacts, s: StopFacts, now: u64, cap_min: u64) -> Verdict {
     // 数え直し: 差し替え前の検出は新しい worker の停止でなく、起きた時刻より前の検出は起きた時刻から T を数える
     let f = TaskFacts {
-        detected: f.detected && f.detected_at > s.replaced_at,
+        detected: f.detected && (s.replaced_at == 0 || f.detected_at > s.replaced_at),
         detected_at: f.detected_at.max(s.woke_at),
         ..f
     };
@@ -178,6 +178,28 @@ mod tests {
             go(Lane::Worker, stalled_at(d), s, 70_000 + CAP * 60),
             STALL_CAP_HA
         );
+    }
+
+    #[test]
+    fn 段を使い切っても検出が止んでいれば差し替えない() {
+        let s = StopFacts {
+            exhausted: true,
+            ..FRESH
+        };
+        let f = stalled_at(NOW - 60);
+        assert_eq!(go(Lane::Worker, f, s, NOW), "replace");
+        for g in [
+            TaskFacts { seen: false, ..f },
+            TaskFacts { cleared: true, ..f },
+            TaskFacts { detected: false, ..f },
+        ] {
+            assert_eq!(go(Lane::Worker, g, s, NOW), "stay");
+        }
+    }
+
+    #[test]
+    fn 未差し替えなら検出時刻が_0_でも検出を無効にしない() {
+        assert_eq!(go(Lane::Worker, stalled_at(0), FRESH, NOW), "replace");
     }
 
     #[test]

@@ -88,7 +88,7 @@ CI はこの環境を持たないので、`.github/workflows/inbox-core.yml` が
 ## 証明の外
 
 - `../src/main.rs`: 引数の解析と出力の整形
-- `../src/replace.rs`: worker の差し替えの遷移 `decide`。証明済みの `next_lane` の結果を包み、上限 T の 1 回目を差し替えに回し、差し替えと起きた時刻の後に T を数え直す。`lib.rs` を変えないために外に置いた。`cargo test` の `replace::tests` で確かめる
+- `../src/replace.rs`: worker の差し替えの遷移 `decide`。証明済みの `next_lane` の結果を包み、上限 T の 1 回目と再送の段を使い切った時点 (T を待たない) を差し替えに回し、差し替えと起きた時刻の後に T を数え直す。`lib.rs` を変えないために外に置いた。`cargo test` の `replace::tests` で確かめる
 - run-inbox.sh の外殻: ファイルの読み書き、herdr への問い合わせ、送信、mv、複数 msg を全件移すか 0 件にするか、`core_decide` の出力の形の検査と bash の表への fallback、`cue_ready` の拒否
 - 外殻の観測が正しいこと: 送り元の生死 (model の前提 A6)、送信の成功が到達を意味すること (A5)、ヘッダとタグの読み取り
 - model に無いタグ (Info / Conflict / Other)。`step_refines` の仮定 `InModel` の外で、返信要否は herdr-message の語彙に従う
