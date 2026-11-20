@@ -60,10 +60,9 @@ pub fn judge(
     if k.marker {
         return Verdict::EndMarker;
     }
-    // merge 待ちで human_action に入った後に判断待ちが付いたら human_decision へ戻す。human_action からは next_lane が動かさず、問いが人に出ないため。merge-wait で入る条件 (他 org の implement、CI 通過) に絞る。StallCap で入った worker の同じ穴は今回の範囲外
+    // human_action に入った後に判断待ちが付いたら human_decision へ戻す。human_action からは next_lane が動かさず、問いが人に出ないため。
+    // 入った経路 (merge-wait / StallCap) や今の CI には依らず、生きた worker が判断を待つ事実だけで決める。judge に履歴の入力を足さないため
     if k.kind == Kind::Implement
-        && k.other_org
-        && k.ci_green
         && matches!(from, Lane::HumanAction)
         && f.waiting
         && matches!(f.panes, Panes::Live)
@@ -282,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_wait_で_human_action_に入った後の判断待ちは_human_decision_へ戻る() {
+    fn human_action_の_implement_の判断待ちは_経路と_ci_によらず_human_decision_へ戻る() {
         let k = KindFacts {
             ci_green: true,
             other_org: true,
@@ -293,28 +292,33 @@ mod tests {
             ..base()
         };
         assert_eq!(go(Lane::HumanAction, waiting, k), "move 4 2"); // Waiting -> HumanDecision
-                                                                   // 条件が欠ければ動かさない: pane が無い、他 org でない、CI が通っていない、implement でない
-        let gone = TaskFacts {
-            panes: Panes::Absent,
-            ..waiting
-        };
-        assert_eq!(go(Lane::HumanAction, gone, k), "stay");
-        for lacking in [
-            KindFacts {
-                other_org: false,
-                ..k
-            },
+                                                                   // CI が赤でも、他 org でなくても (StallCap 経路) 戻る
+        for open in [
             KindFacts {
                 ci_green: false,
                 ..k
             },
             KindFacts {
-                kind: Kind::Monitor,
+                other_org: false,
                 ..k
             },
+            kf(Kind::Implement),
         ] {
-            assert_eq!(go(Lane::HumanAction, waiting, lacking), "stay");
+            assert_eq!(go(Lane::HumanAction, waiting, open), "move 4 2");
         }
+        // 条件が欠ければ動かさない: pane が無い、waiting でない、implement でない
+        let gone = TaskFacts {
+            panes: Panes::Absent,
+            ..waiting
+        };
+        assert_eq!(go(Lane::HumanAction, gone, k), "stay");
+        let calm = base();
+        assert_eq!(go(Lane::HumanAction, calm, k), "stay");
+        let monitor = KindFacts {
+            kind: Kind::Monitor,
+            ..k
+        };
+        assert_eq!(go(Lane::HumanAction, waiting, monitor), "stay");
         // 判断待ちが続く間は human_decision に留まる
         assert_eq!(go(Lane::HumanDecision, waiting, k), "stay");
         // 回答後は todo へ戻り、todo から merge-wait で human_action に進む。waiting が止んだ後は human_action で動かない
@@ -325,6 +329,45 @@ mod tests {
         assert_eq!(go(Lane::HumanDecision, answered, k), "move 3 0"); // Answered -> Todo
         assert_eq!(go(Lane::Todo, answered, k), "merge-wait");
         assert_eq!(go(Lane::HumanAction, answered, k), "stay");
+    }
+
+    #[test]
+    fn 上限前でも停止検出が尽きた報告済みの_implement_は_replace_しない() {
+        let f = TaskFacts {
+            idle: true,
+            working: false,
+            req_accepted: true,
+            remaining: Remaining::Nothing,
+            detected: true,
+            detected_at: NOW,
+            seen: true,
+            ..base()
+        };
+        let ex = StopFacts {
+            exhausted: true,
+            ..FRESH
+        };
+        assert_eq!(
+            show(judge(Lane::Worker, f, ex, NOW, CAP, kf(Kind::Implement))),
+            "stay"
+        );
+    }
+
+    #[test]
+    fn working_でない回答済みの_todo_も_merge_wait_になる() {
+        // decision_id が残り続けるので古い回答と新しい返事待ちを区別できない。段 3 が ci_green を報告済みか ready に絞る前提
+        let k = KindFacts {
+            ci_green: true,
+            other_org: true,
+            ..kf(Kind::Implement)
+        };
+        let idle_answered = TaskFacts {
+            answered: true,
+            working: false,
+            idle: true,
+            ..base()
+        };
+        assert_eq!(go(Lane::Todo, idle_answered, k), "merge-wait");
     }
 
     #[test]
