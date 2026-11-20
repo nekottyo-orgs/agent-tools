@@ -677,9 +677,15 @@ fn is_input(c: &str) -> bool {
 const QUEUE_MAX: usize = 256;
 
 /// transcript の queue-operation を畳んだ、pane の入力キュー。Lean の model の外 (core.rs には置かない)。
-/// 実 transcript (574 session) で確かめた形:
-/// - enqueue は content を持ち、dequeue は何も持たず先頭から出る (FIFO)
-/// - remove は enqueue と同じ content と reason を持つ。reason が dropped_by_hook 以外は届いた (mid-turn に取り込まれた)
+/// 実 transcript で確かめた形:
+/// - enqueue は content を持つ。dequeue は content を持たず先頭から外す。FIFO と content の無い remove、
+///   dequeue の書かれない user 行・queued_command への到達を下の規則で畳むと、561 session (jsonl) の replay で、
+///   後に turn が続くのに残る入力らしい行は 1 件 (入力に数えない task-notification) になった。
+///   残りは session の終わりに未到達だった行 (EOF)
+/// - remove は enqueue と同じ content と reason を持つ (content の無いものもあり、そのときは最古の行を外す)。
+///   reason が dropped_by_hook 以外は届いた (mid-turn に取り込まれた)
+/// - dequeue が書かれないまま同じ content の user 行・queued_command の attachment で届く入力は、その行を外す
+///   (届いた時刻は user 行側が持つので delivered_ts には触れない)
 /// - popAll は入力欄へ戻されたのでキューが空になる
 /// - queued_command の attachment の時刻は送った時刻 (enqueue と同じ) で、届いた時刻は remove の時刻。
 ///   attachment は remove と同じ content を持つので、キューの出入りは queue-operation だけから取る
@@ -694,7 +700,7 @@ pub struct Queue {
 fn content_hash(s: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    s.hash(&mut h);
+    s.trim().hash(&mut h);
     h.finish()
 }
 
@@ -717,7 +723,12 @@ impl Queue {
             Some("dequeue") if !self.items.is_empty() => delivered(self.items.remove(0).1),
             Some("remove") => {
                 let h = content_hash(content);
-                if let Some(i) = self.items.iter().position(|x| x.2 == h) {
+                let pos = if content.is_empty() {
+                    (!self.items.is_empty()).then_some(0)
+                } else {
+                    self.items.iter().position(|x| x.2 == h)
+                };
+                if let Some(i) = pos {
                     let inp = self.items.remove(i).1;
                     if v.get("reason").and_then(Value::as_str) != Some("dropped_by_hook") {
                         delivered(inp);
@@ -726,6 +737,14 @@ impl Queue {
             }
             Some("popAll") => self.items.clear(),
             _ => {}
+        }
+    }
+
+    /// dequeue が書かれないまま user 行・queued_command で届いた入力。その content の最初の一致を外す
+    fn arrived(&mut self, content: &str) {
+        let h = content_hash(content);
+        if let Some(i) = self.items.iter().position(|x| x.2 == h) {
+            self.items.remove(i);
         }
     }
 
@@ -822,23 +841,38 @@ impl Briefs {
         self.read_bytes += buf.len() as u64;
         // 書きかけの行は次の周期に回す
         let end = buf.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
-        for raw in String::from_utf8_lossy(&buf[..end]).split('\n') {
-            if !raw.contains("\"type\":\"queue-operation\"") {
-                continue;
-            }
-            if let Ok(v) = serde_json::from_str::<Value>(raw) {
-                let ts = v
-                    .get("timestamp")
-                    .and_then(Value::as_str)
-                    .and_then(parse_time);
-                if let (Some(ts), Some("queue-operation")) =
-                    (ts, v.get("type").and_then(Value::as_str))
-                {
-                    t.queue.apply(ts, &v);
+        let text = String::from_utf8_lossy(&buf[..end]);
+        // parse_lines は split('\n') と同じ行数・同じ並びで返すので zip できる。queue は順序どおりに畳む
+        for (raw, l) in text.split('\n').zip(parse_lines(&buf[..end])) {
+            if raw.contains("\"type\":\"queue-operation\"") {
+                if let Ok(v) = serde_json::from_str::<Value>(raw) {
+                    let ts = v
+                        .get("timestamp")
+                        .and_then(Value::as_str)
+                        .and_then(parse_time);
+                    if let (Some(ts), Some("queue-operation")) =
+                        (ts, v.get("type").and_then(Value::as_str))
+                    {
+                        t.queue.apply(ts, &v);
+                    }
+                }
+            } else if raw.contains("\"queued_command\"") {
+                if let Ok(v) = serde_json::from_str::<Value>(raw) {
+                    let a = v.get("attachment");
+                    if a.and_then(|a| a.get("type")).and_then(Value::as_str)
+                        == Some("queued_command")
+                    {
+                        if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(Value::as_str) {
+                            t.queue.arrived(p);
+                        }
+                    }
                 }
             }
-        }
-        for l in parse_lines(&buf[..end]) {
+            if l.typ == "user" && !core::excluded(&l) {
+                if let Some(c) = l.content.as_deref() {
+                    t.queue.arrived(c);
+                }
+            }
             let Some(ts) = l.ts else { continue };
             t.first_ts = Some(t.first_ts.map_or(ts, |f| f.min(ts)));
             if is_turn(&l) {
@@ -1316,6 +1350,116 @@ mod tests {
         let last = b.scan(&f).unwrap();
         assert_eq!(once.queue.pending(), last.queue.pending());
         assert_eq!(once.last_input_ts(), last.last_input_ts());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    fn uline(at: &str, content: &str) -> String {
+        serde_json::json!({"type": "user", "timestamp": at, "message": {"content": content}})
+            .to_string()
+            + "\n"
+    }
+
+    fn aline(at: &str, prompt: &str) -> String {
+        serde_json::json!({"type": "attachment", "timestamp": at,
+            "attachment": {"type": "queued_command", "prompt": prompt}})
+        .to_string()
+            + "\n"
+    }
+
+    fn pending_of(f: &Path) -> (usize, Option<i64>) {
+        Briefs::default().scan(f).unwrap().queue.pending()
+    }
+
+    #[test]
+    fn queue_contentless_remove_drops_oldest() {
+        let d = tmp("queue-contentless");
+        let f = d.join("s.jsonl");
+        // content の無い remove が最古の A を外さないと、dequeue が A を外して B が残る
+        let s = [
+            qline("enqueue", "2026-01-02T03:00:00Z", "A", ""),
+            qline("enqueue", "2026-01-02T03:01:00Z", "実装して", ""),
+            qline("remove", "2026-01-02T03:02:00Z", "", "dropped_by_hook"),
+            qline("dequeue", "2026-01-02T03:03:00Z", "", ""),
+        ]
+        .concat();
+        fs::write(&f, s).unwrap();
+        assert_eq!(
+            pending_of(&f),
+            (0, None),
+            "content の無い remove で dequeue がずれたはず"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn queue_arrival_without_dequeue_by_user_line_or_attachment() {
+        let d = tmp("queue-arrived");
+        let f = d.join("s.jsonl");
+        let at = "2026-01-02T03:05:00Z";
+        let enq = qline("enqueue", "2026-01-02T03:00:00Z", "続けて", "");
+        fs::write(&f, &enq).unwrap();
+        assert_eq!(pending_of(&f).0, 1, "届く前は pending のはず");
+        // user 行 (前後の空白は trim して比較する)
+        fs::write(&f, enq.clone() + &uline(at, " 続けて\n")).unwrap();
+        assert_eq!(
+            pending_of(&f),
+            (0, None),
+            "user 行で届いたのに pending のまま"
+        );
+        // meta の user 行は届いた扱いにしない
+        let meta = serde_json::json!({"type":"user","timestamp":at,"isMeta":true,"message":{"content":"続けて"}});
+        fs::write(&f, enq.clone() + &(meta.to_string() + "\n")).unwrap();
+        assert_eq!(pending_of(&f).0, 1, "meta の user 行は除くはず");
+        // queued_command の attachment
+        fs::write(&f, enq.clone() + &aline(at, "続けて")).unwrap();
+        assert_eq!(
+            pending_of(&f),
+            (0, None),
+            "attachment で届いたのに pending のまま"
+        );
+        // 届いた時刻には触れない
+        let tr = Briefs::default().scan(&f).unwrap();
+        assert_eq!(
+            tr.queue.delivered_ts, None,
+            "delivered_ts は user 行側が持つはず"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn queue_arrival_split_scan_matches_single_scan() {
+        let d = tmp("queue-arrived-split");
+        let f = d.join("s.jsonl");
+        let script = [
+            qline("enqueue", "2026-01-02T03:00:00Z", "一つ目", ""),
+            qline("enqueue", "2026-01-02T03:01:00Z", "二つ目", ""),
+            uline("2026-01-02T03:02:00Z", "一つ目"),
+            qline("enqueue", "2026-01-02T03:03:00Z", "三つ目", ""),
+            aline("2026-01-02T03:04:00Z", "二つ目"),
+        ];
+        let mut b = Briefs::default();
+        let mut done = 0;
+        for n in [1, 3, 4, 5] {
+            let mut o = fs::OpenOptions::new();
+            o.create(true).append(true);
+            o.open(&f)
+                .unwrap()
+                .write_all(script[done..n].concat().as_bytes())
+                .unwrap();
+            done = n;
+            b.scan(&f).unwrap();
+        }
+        let split = b.scan(&f).unwrap();
+        let once = Briefs::default().scan(&f).unwrap();
+        assert_eq!(
+            split.queue.pending(),
+            once.queue.pending(),
+            "分割 scan と 1 回 scan が違う"
+        );
+        assert_eq!(
+            once.queue.pending(),
+            (1, parse_time("2026-01-02T03:03:00Z"))
+        );
         let _ = fs::remove_dir_all(&d);
     }
 
