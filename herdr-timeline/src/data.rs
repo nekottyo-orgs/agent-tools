@@ -675,6 +675,8 @@ fn is_input(c: &str) -> bool {
 
 /// キューに残っている件数の上限。session が落ちて dequeue / remove が書かれなかった行が溜まり続けないよう、古い方から捨てる
 const QUEUE_MAX: usize = 256;
+/// 件数に数えない分も含めて、FIFO と content の突き合わせ用に覚えておく上限
+const QUEUE_KEEP: usize = QUEUE_MAX * 4;
 
 /// transcript の queue-operation を畳んだ、pane の入力キュー。Lean の model の外 (core.rs には置かない)。
 /// 実 transcript で確かめた形:
@@ -718,6 +720,10 @@ impl Queue {
                     .push((ts, is_input(content), content_hash(content)));
                 if self.items.len() - self.skip > QUEUE_MAX {
                     self.skip += 1;
+                }
+                // dequeue / remove が書かれない session で items が増え続けないよう、突き合わせ用も打ち切る
+                if self.items.len() > QUEUE_KEEP {
+                    self.take(0);
                 }
             }
             Some("dequeue") if !self.items.is_empty() => {
@@ -1433,6 +1439,17 @@ mod tests {
         .concat();
         fs::write(&f, &s).unwrap();
         assert_eq!(pending_of(&f).0, 1, "remove と attachment で 2 件消えた");
+    }
+
+    #[test]
+    fn queue_keeps_bounded_memory_without_dequeue() {
+        let mut q = Queue::default();
+        for i in 0..QUEUE_KEEP * 3 {
+            let v = serde_json::json!({"operation": "enqueue", "content": format!("入力{i}")});
+            q.apply(0, &v);
+        }
+        assert!(q.items.len() <= QUEUE_KEEP, "items が上限なく増えた");
+        assert_eq!(q.pending().0, QUEUE_MAX);
     }
 
     #[test]
