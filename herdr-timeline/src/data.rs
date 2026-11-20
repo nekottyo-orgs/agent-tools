@@ -698,8 +698,8 @@ pub struct Queue {
     /// dequeue / remove で出たが、まだ user 行・queued_command が来ていない入力の hash。
     /// 同じ content の別の入力を、その到達で二重に外さないために持つ
     claimed: Vec<u64>,
-    /// 上限で items から捨てた、実キューの先頭の件数。FIFO の dequeue はこれを先に消費する
-    evicted: usize,
+    /// items の先頭のうち、上限 QUEUE_MAX を超えて pending に数えない件数。FIFO と content の突き合わせには残す
+    skip: usize,
 }
 
 fn content_hash(s: &str) -> u64 {
@@ -716,29 +716,24 @@ impl Queue {
             Some("enqueue") => {
                 self.items
                     .push((ts, is_input(content), content_hash(content)));
-                if self.items.len() > QUEUE_MAX {
-                    self.items.remove(0);
-                    self.evicted += 1;
+                if self.items.len() - self.skip > QUEUE_MAX {
+                    self.skip += 1;
                 }
             }
-            Some("dequeue") if self.evicted > 0 => self.evicted -= 1,
             Some("dequeue") if !self.items.is_empty() => {
-                let it = self.items.remove(0);
+                let it = self.take(0);
                 self.claim(it);
                 self.deliver(ts, it.1);
             }
             Some("remove") => {
                 let h = content_hash(content);
-                let pos = if content.is_empty() && self.evicted > 0 {
-                    self.evicted -= 1;
-                    None
-                } else if content.is_empty() {
+                let pos = if content.is_empty() {
                     (!self.items.is_empty()).then_some(0)
                 } else {
                     self.items.iter().position(|x| x.2 == h)
                 };
                 if let Some(i) = pos {
-                    let it = self.items.remove(i);
+                    let it = self.take(i);
                     if v.get("reason").and_then(Value::as_str) != Some("dropped_by_hook") {
                         self.claim(it);
                         self.deliver(ts, it.1);
@@ -748,7 +743,7 @@ impl Queue {
             Some("popAll") => {
                 self.items.clear();
                 self.claimed.clear();
-                self.evicted = 0;
+                self.skip = 0;
             }
             _ => {}
         }
@@ -761,8 +756,13 @@ impl Queue {
         if let Some(i) = self.claimed.iter().position(|&c| c == h) {
             self.claimed.remove(i);
         } else if let Some(i) = self.items.iter().position(|x| x.2 == h) {
-            self.items.remove(i);
+            self.take(i);
         }
+    }
+
+    fn take(&mut self, i: usize) -> (i64, bool, u64) {
+        self.skip = self.skip.saturating_sub(usize::from(i < self.skip));
+        self.items.remove(i)
     }
 
     fn deliver(&mut self, ts: i64, inp: bool) {
@@ -783,7 +783,7 @@ impl Queue {
 
     /// 届いていない入力の件数と、その最古の enqueue の時刻
     pub fn pending(&self) -> (usize, Option<i64>) {
-        let ts = || self.items.iter().filter(|x| x.1).map(|x| x.0);
+        let ts = || self.items[self.skip..].iter().filter(|x| x.1).map(|x| x.0);
         (ts().count(), ts().min())
     }
 }
@@ -1433,6 +1433,42 @@ mod tests {
         .concat();
         fs::write(&f, &s).unwrap();
         assert_eq!(pending_of(&f).0, 1, "remove と attachment で 2 件消えた");
+    }
+
+    #[test]
+    fn queue_cap_eviction_still_matches_by_content() {
+        let d = tmp("queue-cap-content");
+        let f = d.join("s.jsonl");
+        let mut s = String::new();
+        for i in 0..=QUEUE_MAX {
+            let c = format!("入力{i}");
+            s += &qline("enqueue", "2026-01-02T03:00:00Z", &c, "");
+        }
+        // 上限で数えなくなった先頭を content で外し、残りを dequeue すると 0 件になる
+        s += &qline(
+            "remove",
+            "2026-01-02T04:00:00Z",
+            "入力0",
+            "absorbed_mid_turn",
+        );
+        for _ in 0..QUEUE_MAX {
+            s += &qline("dequeue", "2026-01-02T05:00:00Z", "", "");
+        }
+        fs::write(&f, &s).unwrap();
+        assert_eq!(
+            pending_of(&f).0,
+            0,
+            "上限で捨てた入力の remove で FIFO がずれた"
+        );
+        // dequeue の無い到達 (user 行) でも同じ
+        let s = s
+            .lines()
+            .take(QUEUE_MAX + 1)
+            .map(|l| l.to_string() + "\n")
+            .collect::<String>()
+            + &uline("2026-01-02T04:00:00Z", "入力0");
+        fs::write(&f, &s).unwrap();
+        assert_eq!(pending_of(&f).0, QUEUE_MAX, "到達した先頭が pending のまま");
     }
 
     #[test]
