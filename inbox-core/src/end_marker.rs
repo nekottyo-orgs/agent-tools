@@ -61,7 +61,8 @@ pub fn judge(
         return Verdict::EndMarker;
     }
     let before_human_action = matches!(from, Lane::Todo | Lane::Worker | Lane::HumanDecision);
-    if k.kind == Kind::Implement && k.other_org && k.ci_green {
+    // 人の判断待ちか回答済みの依頼は merge 待ちで human_action に固定しない。human_action からは next_lane が動かさず、判断の問いが埋もれるため
+    if k.kind == Kind::Implement && k.other_org && k.ci_green && !f.waiting && !f.answered {
         return if before_human_action {
             Verdict::MergeWait
         } else {
@@ -76,10 +77,7 @@ pub fn judge(
                 req_accepted: false,
                 ..f
             };
-            match wrap(replace::decide(from, f, s, now, cap_min)) {
-                Verdict::Move(m) if matches!(m.dest, Lane::Done) => Verdict::Stay,
-                v => v,
-            }
+            wrap(replace::decide(from, f, s, now, cap_min))
         }
         v => wrap(v),
     }
@@ -244,6 +242,29 @@ mod tests {
         }
         // human_action には重ねて出さない
         assert_eq!(go(Lane::HumanAction, base(), k), "stay");
+    }
+
+    #[test]
+    fn 判断待ちか回答済みの_implement_は_merge_wait_で_human_action_に固定しない() {
+        let k = KindFacts {
+            ci_green: true,
+            other_org: true,
+            ..kf(Kind::Implement)
+        };
+        let waiting = TaskFacts {
+            waiting: true,
+            ..base()
+        };
+        let answered = TaskFacts {
+            answered: true,
+            ..base()
+        };
+        for f in [waiting, answered] {
+            for from in [Lane::Todo, Lane::Worker, Lane::HumanDecision] {
+                assert_ne!(go(from, f, k), "merge-wait");
+                assert_eq!(go(from, f, k), plain(from, f));
+            }
+        }
     }
 
     #[test]
