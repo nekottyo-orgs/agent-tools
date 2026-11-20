@@ -4,6 +4,8 @@
 use inbox_core::*;
 use std::process::exit;
 
+mod replace;
+
 const USAGE: &str = "使い方: inbox-core <op> <tag> <box> <sender> <header> <sent>
   op:     ack | ack-no-reply | ack-sender-gone | reply | hold
   tag:    msg 名から切り出したタグ (語彙外は返信必須として扱う)
@@ -12,9 +14,10 @@ const USAGE: &str = "使い方: inbox-core <op> <tag> <box> <sender> <header> <s
   header: valid | invalid (ack-sender-gone と reply だけが読む)
   sent:   yes | no (reply だけが読む)
 出力: 1 行目 moved <box> <res> | unchanged | refused <理由>、2 行目以降 effect <副作用>
-  inbox-core lane <from> <panes> <idle> <working> <close_failed> <accepted> <req_accepted> <remaining> <waiting> <answered> <detected> <detected_at> <seen> <cleared> <now> <cap_min>
+  inbox-core lane <from> <panes> <idle> <working> <close_failed> <accepted> <req_accepted> <remaining> <waiting> <answered> <detected> <detected_at> <seen> <cleared> <replaced_at> <woke_at> <exhausted> <now> <cap_min>
+    replaced_at: 差し替えた時刻 (0 は未差し替え)  woke_at: 起きた時刻 (0 は無し)  exhausted: 再送の段を使い切った (bool)
+    出力: none | replace | move <rule> <dest>
     from: todo|worker|human_decision|human_action|done  panes: unknown|absent|closed|live  remaining: empty|nothing|other  bool: yes|no  数値: 10 進 (2^40 未満)
-    出力: none | move <rule> <dest>
   inbox-core stalled <idle> <report> <assign> <now> <min>
     出力: active | due <時刻> | stalled report | stalled assign
   inbox-core resend <tried> <last_nudge> <nudge_sent> <blocked> <agent> <rc> <input> <own> <pasted> <delivered> <overdue>
@@ -190,7 +193,7 @@ fn rule_name(r: Rule) -> &'static str {
 }
 
 fn run_lane(a: &[String]) -> Option<String> {
-    if a.len() != 17 {
+    if a.len() != 20 {
         return None;
     }
     let from = lane(&a[1])?;
@@ -222,10 +225,16 @@ fn run_lane(a: &[String]) -> Option<String> {
         seen: yn(&a[13])?,
         cleared: yn(&a[14])?,
     };
-    let (now, cap) = (num(&a[15])?, num(&a[16])?);
-    Some(match next_lane(from, f, now, cap) {
-        None => "none".into(),
-        Some(m) => format!("move {} {}", rule_name(m.rule), lane_name(m.dest)),
+    let s = replace::StopFacts {
+        replaced_at: num(&a[15])?,
+        woke_at: num(&a[16])?,
+        exhausted: yn(&a[17])?,
+    };
+    let (now, cap) = (num(&a[18])?, num(&a[19])?);
+    Some(match replace::decide(from, f, s, now, cap) {
+        replace::Verdict::Stay => "none".into(),
+        replace::Verdict::Replace => "replace".into(),
+        replace::Verdict::Move(m) => format!("move {} {}", rule_name(m.rule), lane_name(m.dest)),
     })
 }
 
@@ -501,15 +510,38 @@ mod tests {
 
     #[test]
     fn lane_cmd() {
-        let base = "lane todo live no no no no no nothing no no no 0 no no 100000 30";
+        let base = "lane todo live no no no no no nothing no no no 0 no no 0 0 no 100000 30";
         assert_eq!(extra(base).unwrap(), "move live worker");
         assert_eq!(
-            extra("lane done live no no no no no nothing no no no 0 no no 100000 30").unwrap(),
+            extra("lane done live no no no no no nothing no no no 0 no no 0 0 no 100000 30")
+                .unwrap(),
             "none"
         );
         assert_eq!(
-            extra("lane worker absent no no no yes no other yes no no 0 no no 100000 30").unwrap(),
+            extra("lane worker absent no no no yes no other yes no no 0 no no 0 0 no 100000 30")
+                .unwrap(),
             "move settle-gone human_decision"
+        );
+        assert_eq!(
+            extra("lane worker live yes no no no no other no no yes 98200 yes no 0 0 no 100000 30")
+                .unwrap(),
+            "replace"
+        );
+        // 新しい 3 引数 (replaced_at / woke_at / exhausted) の位置
+        assert_eq!(
+            extra("lane worker live yes no no no no other no no yes 98200 yes no 90000 0 no 100000 30")
+                .unwrap(),
+            "move stall-cap human_action"
+        );
+        assert_eq!(
+            extra("lane worker live yes no no no no other no no yes 99000 yes no 0 0 yes 100000 30")
+                .unwrap(),
+            "replace"
+        );
+        assert_eq!(
+            extra("lane worker live yes no no no no other no no yes 98200 yes no 0 99000 no 100000 30")
+                .unwrap(),
+            "none"
         );
         // 誤り: bool 語彙外、lane 語彙外、数値の桁あふれ、引数の数
         assert!(extra(&base.replace("live no", "live maybe")).is_none());
