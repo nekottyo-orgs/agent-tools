@@ -695,6 +695,11 @@ pub struct Queue {
     items: Vec<(i64, bool, u64)>,
     /// 入力がキューを出て pane に届いた最後の時刻 (dequeue と、remove の reason が dropped_by_hook 以外)
     delivered_ts: Option<i64>,
+    /// dequeue / remove で出たが、まだ user 行・queued_command が来ていない入力の hash。
+    /// 同じ content の別の入力を、その到達で二重に外さないために持つ
+    claimed: Vec<u64>,
+    /// 上限で items から捨てた、実キューの先頭の件数。FIFO の dequeue はこれを先に消費する
+    evicted: usize,
 }
 
 fn content_hash(s: &str) -> u64 {
@@ -707,35 +712,44 @@ fn content_hash(s: &str) -> u64 {
 impl Queue {
     fn apply(&mut self, ts: i64, v: &Value) {
         let content = v.get("content").and_then(Value::as_str).unwrap_or("");
-        let mut delivered = |inp: bool| {
-            if inp {
-                self.delivered_ts = Some(self.delivered_ts.map_or(ts, |p| p.max(ts)));
-            }
-        };
         match v.get("operation").and_then(Value::as_str) {
             Some("enqueue") => {
                 self.items
                     .push((ts, is_input(content), content_hash(content)));
                 if self.items.len() > QUEUE_MAX {
                     self.items.remove(0);
+                    self.evicted += 1;
                 }
             }
-            Some("dequeue") if !self.items.is_empty() => delivered(self.items.remove(0).1),
+            Some("dequeue") if self.evicted > 0 => self.evicted -= 1,
+            Some("dequeue") if !self.items.is_empty() => {
+                let it = self.items.remove(0);
+                self.claim(it);
+                self.deliver(ts, it.1);
+            }
             Some("remove") => {
                 let h = content_hash(content);
-                let pos = if content.is_empty() {
+                let pos = if content.is_empty() && self.evicted > 0 {
+                    self.evicted -= 1;
+                    None
+                } else if content.is_empty() {
                     (!self.items.is_empty()).then_some(0)
                 } else {
                     self.items.iter().position(|x| x.2 == h)
                 };
                 if let Some(i) = pos {
-                    let inp = self.items.remove(i).1;
+                    let it = self.items.remove(i);
                     if v.get("reason").and_then(Value::as_str) != Some("dropped_by_hook") {
-                        delivered(inp);
+                        self.claim(it);
+                        self.deliver(ts, it.1);
                     }
                 }
             }
-            Some("popAll") => self.items.clear(),
+            Some("popAll") => {
+                self.items.clear();
+                self.claimed.clear();
+                self.evicted = 0;
+            }
             _ => {}
         }
     }
@@ -743,8 +757,27 @@ impl Queue {
     /// dequeue が書かれないまま user 行・queued_command で届いた入力。その content の最初の一致を外す
     fn arrived(&mut self, content: &str) {
         let h = content_hash(content);
-        if let Some(i) = self.items.iter().position(|x| x.2 == h) {
+        // dequeue / remove が既に外した入力の到達なら、同じ content の別の入力は残す
+        if let Some(i) = self.claimed.iter().position(|&c| c == h) {
+            self.claimed.remove(i);
+        } else if let Some(i) = self.items.iter().position(|x| x.2 == h) {
             self.items.remove(i);
+        }
+    }
+
+    fn deliver(&mut self, ts: i64, inp: bool) {
+        if inp {
+            self.delivered_ts = Some(self.delivered_ts.map_or(ts, |p| p.max(ts)));
+        }
+    }
+
+    /// 入力を dequeue / remove で外したとき、後に来るその到達を数え済みにする
+    fn claim(&mut self, it: (i64, bool, u64)) {
+        if it.1 {
+            self.claimed.push(it.2);
+            if self.claimed.len() > QUEUE_MAX {
+                self.claimed.remove(0);
+            }
         }
     }
 
@@ -1368,6 +1401,61 @@ mod tests {
 
     fn pending_of(f: &Path) -> (usize, Option<i64>) {
         Briefs::default().scan(f).unwrap().queue.pending()
+    }
+
+    #[test]
+    fn queue_same_content_is_not_consumed_twice() {
+        let d = tmp("queue-same-content");
+        let f = d.join("s.jsonl");
+        let e = |at| qline("enqueue", at, "続けて", "");
+        // dequeue が 1 件外し、その到達の user 行で 2 件目まで外してはいけない
+        let s = [
+            e("2026-01-02T03:00:00Z"),
+            e("2026-01-02T03:00:01Z"),
+            qline("dequeue", "2026-01-02T03:01:00Z", "", ""),
+            uline("2026-01-02T03:01:00Z", "続けて"),
+        ]
+        .concat();
+        fs::write(&f, &s).unwrap();
+        assert_eq!(pending_of(&f).0, 1, "dequeue と user 行で 2 件消えた");
+        // remove と同じ content の queued_command も同様
+        let s = [
+            e("2026-01-02T03:00:00Z"),
+            e("2026-01-02T03:00:01Z"),
+            qline(
+                "remove",
+                "2026-01-02T03:01:00Z",
+                "続けて",
+                "absorbed_mid_turn",
+            ),
+            aline("2026-01-02T03:00:00Z", "続けて"),
+        ]
+        .concat();
+        fs::write(&f, &s).unwrap();
+        assert_eq!(pending_of(&f).0, 1, "remove と attachment で 2 件消えた");
+    }
+
+    #[test]
+    fn queue_cap_eviction_keeps_fifo_alignment() {
+        let d = tmp("queue-cap-fifo");
+        let f = d.join("s.jsonl");
+        let note = "<task-notification>done</task-notification>";
+        let mut s = String::new();
+        for i in 0..QUEUE_MAX {
+            s += &qline(
+                "enqueue",
+                &format!("2026-01-02T03:{:02}:{:02}Z", i / 60, i % 60),
+                note,
+                "",
+            );
+        }
+        s += &qline("enqueue", "2026-01-02T04:00:00Z", "実装して", "");
+        // 実キューは 257 件。通知 256 回の dequeue では指示を外さない
+        for _ in 0..QUEUE_MAX {
+            s += &qline("dequeue", "2026-01-02T05:00:00Z", "", "");
+        }
+        fs::write(&f, &s).unwrap();
+        assert_eq!(pending_of(&f).0, 1, "上限で捨てた後に指示が先に外れた");
     }
 
     #[test]
