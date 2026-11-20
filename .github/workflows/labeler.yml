@@ -37,7 +37,7 @@ jobs:
             echo "files API returned $got of $total files; leaving labels as they are" >&2
             exit 1
           fi
-          for tool in bash-gates secret-scan herdr-timeline; do
+          for tool in bash-gates secret-scan herdr-timeline inbox-core; do
             # 触らなくなった tool の label は外す (変更を戻した PR が notes に残らないようにする)
             if grep -Eq "^\[\"$tool/|,\"$tool/" <<<"$files"; then
               gh pr edit "$PR_NUMBER" --add-label "$tool"

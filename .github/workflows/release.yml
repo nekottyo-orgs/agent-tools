@@ -16,6 +16,7 @@ on:
       - 'bash-gates/v*'
       - 'secret-scan/v*'
       - 'herdr-timeline/v*'
+      - 'inbox-core/v*'
   pull_request:
     paths:
       - '.github/workflows/release.yml'
@@ -42,12 +43,12 @@ jobs:
             # tag の push は 1 tool 分。`<tool>/v<version>` の <tool> だけを build する
             tool="${REF_NAME%%/*}"
             case "$tool" in
-              bash-gates|secret-scan|herdr-timeline) ;;
+              bash-gates|secret-scan|herdr-timeline|inbox-core) ;;
               *) echo "unknown tool in tag: $REF_NAME" >&2; exit 1 ;;
             esac
             tools=$(jq -cn --arg t "$tool" '[$t]')
           else
-            tools='["bash-gates","secret-scan","herdr-timeline"]'
+            tools='["bash-gates","secret-scan","herdr-timeline","inbox-core"]'
           fi
           matrix=$(jq -cn --argjson tools "$tools" --argjson targets "$targets" '{include: [$tools[] as $tool | $targets[] | . + {tool: $tool}]}')
           # 1 つの tag の asset は、target ごとに binary と .sha256 の 2 つ

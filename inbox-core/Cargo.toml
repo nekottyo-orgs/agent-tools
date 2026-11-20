@@ -1,0 +1,10 @@
+[package]
+name = "inbox-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+# src/lib.rs は Lean の証明の対象で、sha256 を lean/lib.rs.sha256 に固定している。clippy の書き換え案に合わせて変えると証明を回し直すことになるので、指摘された lint はここで外す
+[lints.clippy]
+match_like_matches_macro = "allow"

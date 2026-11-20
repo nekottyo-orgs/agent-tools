@@ -7,6 +7,8 @@ workflows:
         - 'actions/checkout@v7.0.1'
     '.github/workflows/herdr-timeline.yml':
         - 'actions/checkout@v7.0.1'
+    '.github/workflows/inbox-core.yml':
+        - 'actions/checkout@v7.0.1'
     '.github/workflows/labeler.yml': []
     '.github/workflows/release.yml':
         - 'actions/checkout@v7.0.1'
@@ -15,6 +17,10 @@ workflows:
     '.github/workflows/secret-scan.yml':
         - 'actions/checkout@v7.0.1'
     '.github/workflows/tagpr-herdr-timeline.yml':
+        - 'actions/checkout@v6.1.0'
+        - 'actions/create-github-app-token@v3.3.0'
+        - 'songmu/tagpr@v1.22.0'
+    '.github/workflows/tagpr-inbox-core.yml':
         - 'actions/checkout@v6.1.0'
         - 'actions/create-github-app-token@v3.3.0'
         - 'songmu/tagpr@v1.22.0'
