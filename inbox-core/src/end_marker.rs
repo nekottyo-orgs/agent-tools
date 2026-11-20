@@ -61,8 +61,10 @@ pub fn judge(
         return Verdict::EndMarker;
     }
     let before_human_action = matches!(from, Lane::Todo | Lane::Worker | Lane::HumanDecision);
-    // 人の判断待ちか回答済みの依頼は merge 待ちで human_action に固定しない。human_action からは next_lane が動かさず、判断の問いが埋もれるため
-    if k.kind == Kind::Implement && k.other_org && k.ci_green && !f.waiting && !f.answered {
+    // 人の判断待ちか、回答を todo へ戻す途中の依頼は merge 待ちで human_action に固定しない。human_action からは next_lane が動かさず、判断の問いが埋もれるため
+    // answered は decision_id が task に残り続けるので常に立ちうる。止めるのは回答を todo へ戻す human_decision からだけ
+    let answer_pending = matches!(from, Lane::HumanDecision) && f.answered;
+    if k.kind == Kind::Implement && k.other_org && k.ci_green && !f.waiting && !answer_pending {
         return if before_human_action {
             Verdict::MergeWait
         } else {
@@ -77,7 +79,12 @@ pub fn judge(
                 req_accepted: false,
                 ..f
             };
-            wrap(replace::decide(from, f, s, now, cap_min))
+            // 報告済みで merge を待つ worker は、報告を落とすと停止に見える。差し替えと停止上限は報告を前提に出る判定なので生かさない
+            match replace::decide(from, f, s, now, cap_min) {
+                replace::Verdict::Replace => Verdict::Stay,
+                replace::Verdict::Move(m) if matches!(m.rule, Rule::StallCap) => Verdict::Stay,
+                v => wrap(v),
+            }
         }
         v => wrap(v),
     }
@@ -245,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn 判断待ちか回答済みの_implement_は_merge_wait_で_human_action_に固定しない() {
+    fn 判断待ちの_implement_は_merge_wait_で_human_action_に固定しない() {
         let k = KindFacts {
             ci_green: true,
             other_org: true,
@@ -255,16 +262,73 @@ mod tests {
             waiting: true,
             ..base()
         };
+        for from in [Lane::Todo, Lane::Worker, Lane::HumanDecision] {
+            assert_ne!(go(from, waiting, k), "merge-wait");
+            assert_eq!(go(from, waiting, k), plain(from, waiting));
+        }
+    }
+
+    #[test]
+    fn 回答済みでも_human_decision_以外なら_merge_wait_が出る() {
+        // decision_id は task に残り続けるので answered は一度立つと戻らない
+        let k = KindFacts {
+            ci_green: true,
+            other_org: true,
+            ..kf(Kind::Implement)
+        };
         let answered = TaskFacts {
             answered: true,
             ..base()
         };
-        for f in [waiting, answered] {
-            for from in [Lane::Todo, Lane::Worker, Lane::HumanDecision] {
-                assert_ne!(go(from, f, k), "merge-wait");
-                assert_eq!(go(from, f, k), plain(from, f));
-            }
-        }
+        assert_eq!(go(Lane::Todo, answered, k), "merge-wait");
+        assert_eq!(go(Lane::Worker, answered, k), "merge-wait");
+        // 回答を todo へ戻す human_decision からは従来の判定
+        assert_eq!(
+            go(Lane::HumanDecision, answered, k),
+            plain(Lane::HumanDecision, answered)
+        );
+        assert_ne!(go(Lane::HumanDecision, answered, k), "merge-wait");
+    }
+
+    #[test]
+    fn 報告済みで停止検出のある_implement_の_worker_は_replace_も_stall_cap_もしない() {
+        // live かつ idle、報告受け入れ済み、最初の停止検出が上限を超えている
+        let f = TaskFacts {
+            idle: true,
+            working: false,
+            req_accepted: true,
+            remaining: Remaining::Nothing,
+            detected: true,
+            detected_at: 1000,
+            seen: true,
+            ..base()
+        };
+        assert_eq!(
+            plain(Lane::Worker, f),
+            "move 1 4",
+            "前提: 報告だけなら従来は SettleDone"
+        );
+        assert_eq!(go(Lane::Worker, f, kf(Kind::Implement)), "stay");
+        // 差し替え済み (2 回目) の StallCap move も同じく stay
+        let again = StopFacts {
+            replaced_at: 500,
+            ..FRESH
+        };
+        let f2 = TaskFacts {
+            detected_at: 1000,
+            ..f
+        };
+        assert_eq!(
+            show(judge(
+                Lane::Worker,
+                f2,
+                again,
+                NOW,
+                CAP,
+                kf(Kind::Implement)
+            )),
+            "stay"
+        );
     }
 
     #[test]
