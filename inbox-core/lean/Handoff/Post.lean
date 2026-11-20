@@ -308,8 +308,7 @@ theorem pre_spurious_fire : ∃ s s', Reach Config.pre wOk s ∧ Step Config.pre
   have r1 : Reach Config.pre wOk { init with armed := true, msgs := unskip init.msgs } :=
     Reach.step Reach.init (Step.rearm (Rearm.arm init false (by simp [Config.pre])))
   refine ⟨_, _, r1, Step.fire _ rfl, rfl, ?_⟩
-  simp only [State.mk.injEq]
-  refine ⟨rfl, ?_⟩
+  simp only [State.mk.injEq, true_and, and_true]
   funext i; rfl
 
 /-- 穴 2: 通知は、new/ にあって seen に無い msg を少なくとも 1 件見せる -/
