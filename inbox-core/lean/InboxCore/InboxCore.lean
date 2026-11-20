@@ -419,4 +419,757 @@ def plan (m : Msg) (op : Op) (o : Obs) : Result (alloc.vec.Vec Effect) := do
     | Op.Hold => alloc.vec.Vec.push (alloc.vec.Vec.new Effect) Effect.WriteWait
   | Outcome.Refused _ => ok (alloc.vec.Vec.new Effect)
 
+/-- [inbox_core::Lane]
+    Source: 'src/lib.rs', lines 220:0-226:1
+    Visibility: public -/
+@[discriminant isize]
+inductive Lane where
+| Todo : Lane
+| Worker : Lane
+| HumanDecision : Lane
+| HumanAction : Lane
+| Done : Lane
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::Lane}::clone]:
+    Source: 'src/lib.rs', lines 219:9-219:14
+    Visibility: public -/
+def Lane.Insts.CoreCloneClone.clone (self : Lane) : Result Lane := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::Lane}]
+    Source: 'src/lib.rs', lines 219:9-219:14 -/
+@[reducible]
+def Lane.Insts.CoreCloneClone : core.clone.Clone Lane := {
+  clone := Lane.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::Lane}]
+    Source: 'src/lib.rs', lines 219:16-219:20 -/
+@[reducible]
+def Lane.Insts.CoreMarkerCopy : core.marker.Copy Lane := {
+  cloneInst := Lane.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::Panes]
+    Source: 'src/lib.rs', lines 230:0-239:1
+    Visibility: public -/
+@[discriminant isize]
+inductive Panes where
+| Unknown : Panes
+| Absent : Panes
+| Closed : Panes
+| Live : Panes
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::Panes}::clone]:
+    Source: 'src/lib.rs', lines 229:9-229:14
+    Visibility: public -/
+def Panes.Insts.CoreCloneClone.clone (self : Panes) : Result Panes := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::Panes}]
+    Source: 'src/lib.rs', lines 229:9-229:14 -/
+@[reducible]
+def Panes.Insts.CoreCloneClone : core.clone.Clone Panes := {
+  clone := Panes.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::Panes}]
+    Source: 'src/lib.rs', lines 229:16-229:20 -/
+@[reducible]
+def Panes.Insts.CoreMarkerCopy : core.marker.Copy Panes := {
+  cloneInst := Panes.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::Remaining]
+    Source: 'src/lib.rs', lines 242:0-247:1
+    Visibility: public -/
+@[discriminant isize]
+inductive Remaining where
+| Empty : Remaining
+| Nothing : Remaining
+| Other : Remaining
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::Remaining}::clone]:
+    Source: 'src/lib.rs', lines 241:9-241:14
+    Visibility: public -/
+def Remaining.Insts.CoreCloneClone.clone
+  (self : Remaining) : Result Remaining := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::Remaining}]
+    Source: 'src/lib.rs', lines 241:9-241:14 -/
+@[reducible]
+def Remaining.Insts.CoreCloneClone : core.clone.Clone Remaining := {
+  clone := Remaining.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::Remaining}]
+    Source: 'src/lib.rs', lines 241:16-241:20 -/
+@[reducible]
+def Remaining.Insts.CoreMarkerCopy : core.marker.Copy Remaining := {
+  cloneInst := Remaining.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::TaskFacts]
+    Source: 'src/lib.rs', lines 250:0-274:1
+    Visibility: public -/
+structure TaskFacts where
+  panes : Panes
+  idle : Bool
+  working : Bool
+  close_failed : Bool
+  accepted : Bool
+  req_accepted : Bool
+  remaining : Remaining
+  waiting : Bool
+  answered : Bool
+  detected : Bool
+  detected_at : Std.U64
+  seen : Bool
+  cleared : Bool
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::TaskFacts}::clone]:
+    Source: 'src/lib.rs', lines 249:9-249:14
+    Visibility: public -/
+def TaskFacts.Insts.CoreCloneClone.clone
+  (self : TaskFacts) : Result TaskFacts := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::TaskFacts}]
+    Source: 'src/lib.rs', lines 249:9-249:14 -/
+@[reducible]
+def TaskFacts.Insts.CoreCloneClone : core.clone.Clone TaskFacts := {
+  clone := TaskFacts.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::TaskFacts}]
+    Source: 'src/lib.rs', lines 249:16-249:20 -/
+@[reducible]
+def TaskFacts.Insts.CoreMarkerCopy : core.marker.Copy TaskFacts := {
+  cloneInst := TaskFacts.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::Rule]
+    Source: 'src/lib.rs', lines 278:0-293:1
+    Visibility: public -/
+@[discriminant isize]
+inductive Rule where
+| SettleGone : Rule
+| SettleDone : Rule
+| PaneGone : Rule
+| Answered : Rule
+| Waiting : Rule
+| StallCap : Rule
+| Live : Rule
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::Rule}::clone]:
+    Source: 'src/lib.rs', lines 277:9-277:14
+    Visibility: public -/
+def Rule.Insts.CoreCloneClone.clone (self : Rule) : Result Rule := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::Rule}]
+    Source: 'src/lib.rs', lines 277:9-277:14 -/
+@[reducible]
+def Rule.Insts.CoreCloneClone : core.clone.Clone Rule := {
+  clone := Rule.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::Rule}]
+    Source: 'src/lib.rs', lines 277:16-277:20 -/
+@[reducible]
+def Rule.Insts.CoreMarkerCopy : core.marker.Copy Rule := {
+  cloneInst := Rule.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::Move]
+    Source: 'src/lib.rs', lines 296:0-299:1
+    Visibility: public -/
+structure Move where
+  rule : Rule
+  dest : Lane
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::Move}::clone]:
+    Source: 'src/lib.rs', lines 295:9-295:14
+    Visibility: public -/
+def Move.Insts.CoreCloneClone.clone (self : Move) : Result Move := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::Move}]
+    Source: 'src/lib.rs', lines 295:9-295:14 -/
+@[reducible]
+def Move.Insts.CoreCloneClone : core.clone.Clone Move := {
+  clone := Move.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::Move}]
+    Source: 'src/lib.rs', lines 295:16-295:20 -/
+@[reducible]
+def Move.Insts.CoreMarkerCopy : core.marker.Copy Move := {
+  cloneInst := Move.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::over_cap]:
+    Source: 'src/lib.rs', lines 301:0-303:1
+    Visibility: public -/
+def over_cap
+  (f : TaskFacts) (now : Std.U64) (cap_min : Std.U64) : Result Bool := do
+  if f.detected
+  then
+    if f.seen
+    then
+      if f.cleared
+      then ok false
+      else
+        let i ← cap_min * 60#u64
+        let i1 ← f.detected_at + i
+        ok (now >= i1)
+    else ok false
+  else ok false
+
+/-- [inbox_core::todo_or_worker]:
+    Source: 'src/lib.rs', lines 305:0-307:1 -/
+def todo_or_worker (l : Lane) : Result Bool := do
+  match l with
+  | Lane.Todo => ok true
+  | Lane.Worker => ok true
+  | Lane.HumanDecision => ok false
+  | Lane.HumanAction => ok false
+  | Lane.Done => ok false
+
+/-- [inbox_core::next_lane]:
+    Source: 'src/lib.rs', lines 311:0-357:1
+    Visibility: public -/
+def next_lane
+  («from» : Lane) (f : TaskFacts) (now : Std.U64) (cap_min : Std.U64) :
+  Result (Option Move)
+  := do
+  let tw ← todo_or_worker «from»
+  let (p, live) ←
+    match f.panes with
+    | Panes.Unknown => ok (Panes.Unknown, false)
+    | Panes.Absent => ok (Panes.Absent, false)
+    | Panes.Closed => ok (Panes.Closed, false)
+    | Panes.Live => ok (Panes.Live, true)
+  let gone ←
+    match p with
+    | Panes.Unknown => ok false
+    | Panes.Absent => ok true
+    | Panes.Closed => ok true
+    | Panes.Live => ok false
+  let c_settle_gone ←
+    if tw
+    then if gone
+         then ok f.accepted
+         else ok false
+    else ok false
+  let (r, c_settle_done) ←
+    if tw
+    then
+      if live
+      then
+        if f.idle
+        then
+          if f.req_accepted
+          then
+            if f.waiting
+            then ok (f.remaining, false)
+            else
+              if f.close_failed
+              then ok (f.remaining, false)
+              else
+                match f.remaining with
+                | Remaining.Empty => ok (Remaining.Empty, false)
+                | Remaining.Nothing => ok (Remaining.Nothing, true)
+                | Remaining.Other => ok (Remaining.Other, false)
+          else ok (f.remaining, false)
+        else ok (f.remaining, false)
+      else ok (f.remaining, false)
+    else ok (f.remaining, false)
+  let b ←
+    match «from» with
+    | Lane.Todo => ok false
+    | Lane.Worker => ok true
+    | Lane.HumanDecision => ok false
+    | Lane.HumanAction => ok false
+    | Lane.Done => ok false
+  let (p1, c_pane_gone) ←
+    if b
+    then
+      do
+      let b1 ←
+        match p with
+        | Panes.Unknown => ok false
+        | Panes.Absent => ok true
+        | Panes.Closed => ok false
+        | Panes.Live => ok false
+      ok (p, b1)
+    else ok (p, false)
+  let b1 ←
+    match «from» with
+    | Lane.Todo => ok false
+    | Lane.Worker => ok false
+    | Lane.HumanDecision => ok true
+    | Lane.HumanAction => ok false
+    | Lane.Done => ok false
+  let c_answered ←
+    if b1
+    then if f.answered
+         then ok (¬ f.waiting)
+         else ok false
+    else ok false
+  let c_waiting ←
+    if tw
+    then if live
+         then ok f.waiting
+         else ok false
+    else ok false
+  let b2 ←
+    match «from» with
+    | Lane.Todo => ok false
+    | Lane.Worker => ok true
+    | Lane.HumanDecision => ok false
+    | Lane.HumanAction => ok false
+    | Lane.Done => ok false
+  let c_stall ←
+    if b2
+    then
+      if live
+      then
+        if f.idle
+        then over_cap { f with panes := p1, remaining := r } now cap_min
+        else ok false
+      else ok false
+    else ok false
+  let b3 ←
+    match «from» with
+    | Lane.Todo => ok true
+    | Lane.Worker => ok false
+    | Lane.HumanDecision => ok false
+    | Lane.HumanAction => ok false
+    | Lane.Done => ok false
+  let c_live ←
+    if b3
+    then
+      if live
+      then
+        do
+        let b4 ← if f.answered
+                   then ok (¬ f.working)
+                   else ok false
+        ok (¬ b4)
+      else ok false
+    else ok false
+  if c_settle_gone
+  then
+    match r with
+    | Remaining.Empty =>
+      ok (some { rule := Rule.SettleGone, dest := Lane.Done })
+    | Remaining.Nothing =>
+      ok (some { rule := Rule.SettleGone, dest := Lane.Done })
+    | Remaining.Other =>
+      if f.waiting
+      then ok (some { rule := Rule.SettleGone, dest := Lane.HumanDecision })
+      else ok (some { rule := Rule.SettleGone, dest := Lane.HumanAction })
+  else
+    if c_settle_done
+    then ok (some { rule := Rule.SettleDone, dest := Lane.Done })
+    else
+      if c_pane_gone
+      then ok (some { rule := Rule.PaneGone, dest := Lane.Todo })
+      else
+        if c_answered
+        then ok (some { rule := Rule.Answered, dest := Lane.Todo })
+        else
+          if c_waiting
+          then ok (some { rule := Rule.Waiting, dest := Lane.HumanDecision })
+          else
+            if c_stall
+            then ok (some { rule := Rule.StallCap, dest := Lane.HumanAction })
+            else
+              if c_live
+              then ok (some { rule := Rule.Live, dest := Lane.Worker })
+              else ok none
+
+/-- [inbox_core::StallFacts]
+    Source: 'src/lib.rs', lines 361:0-368:1
+    Visibility: public -/
+structure StallFacts where
+  idle : Bool
+  report : Std.U64
+  assign : Std.U64
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::StallFacts}::clone]:
+    Source: 'src/lib.rs', lines 360:9-360:14
+    Visibility: public -/
+def StallFacts.Insts.CoreCloneClone.clone
+  (self : StallFacts) : Result StallFacts := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::StallFacts}]
+    Source: 'src/lib.rs', lines 360:9-360:14 -/
+@[reducible]
+def StallFacts.Insts.CoreCloneClone : core.clone.Clone StallFacts := {
+  clone := StallFacts.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::StallFacts}]
+    Source: 'src/lib.rs', lines 360:16-360:20 -/
+@[reducible]
+def StallFacts.Insts.CoreMarkerCopy : core.marker.Copy StallFacts := {
+  cloneInst := StallFacts.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::Origin]
+    Source: 'src/lib.rs', lines 371:0-374:1
+    Visibility: public -/
+@[discriminant isize]
+inductive Origin where
+| Report : Origin
+| Assign : Origin
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::Origin}::clone]:
+    Source: 'src/lib.rs', lines 370:9-370:14
+    Visibility: public -/
+def Origin.Insts.CoreCloneClone.clone (self : Origin) : Result Origin := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::Origin}]
+    Source: 'src/lib.rs', lines 370:9-370:14 -/
+@[reducible]
+def Origin.Insts.CoreCloneClone : core.clone.Clone Origin := {
+  clone := Origin.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::Origin}]
+    Source: 'src/lib.rs', lines 370:16-370:20 -/
+@[reducible]
+def Origin.Insts.CoreMarkerCopy : core.marker.Copy Origin := {
+  cloneInst := Origin.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::Stall]
+    Source: 'src/lib.rs', lines 377:0-384:1
+    Visibility: public -/
+@[discriminant isize]
+inductive Stall where
+| Active : Stall
+| Due : Std.U64 → Stall
+| Stalled : Origin → Stall
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::Stall}::clone]:
+    Source: 'src/lib.rs', lines 376:9-376:14
+    Visibility: public -/
+def Stall.Insts.CoreCloneClone.clone (self : Stall) : Result Stall := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::Stall}]
+    Source: 'src/lib.rs', lines 376:9-376:14 -/
+@[reducible]
+def Stall.Insts.CoreCloneClone : core.clone.Clone Stall := {
+  clone := Stall.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::Stall}]
+    Source: 'src/lib.rs', lines 376:16-376:20 -/
+@[reducible]
+def Stall.Insts.CoreMarkerCopy : core.marker.Copy Stall := {
+  cloneInst := Stall.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::stalled]:
+    Source: 'src/lib.rs', lines 386:0-397:1
+    Visibility: public -/
+def stalled
+  (f : StallFacts) (now : Std.U64) (min : Std.U64) : Result Stall := do
+  let t0 ← if f.report >= f.assign
+             then ok f.report
+             else ok f.assign
+  if f.idle
+  then
+    if t0 = 0#u64
+    then ok Stall.Active
+    else
+      let i ← min * 60#u64
+      let i1 ← t0 + i
+      if now < i1
+      then let i2 ← t0 + i
+           ok (Stall.Due i2)
+      else
+        if f.report >= f.assign
+        then ok (Stall.Stalled Origin.Report)
+        else ok (Stall.Stalled Origin.Assign)
+  else ok Stall.Active
+
+/-- [inbox_core::Agent]
+    Source: 'src/lib.rs', lines 402:0-405:1
+    Visibility: public -/
+@[discriminant isize]
+inductive Agent where
+| Claude : Agent
+| Other : Agent
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::Agent}::clone]:
+    Source: 'src/lib.rs', lines 401:9-401:14
+    Visibility: public -/
+def Agent.Insts.CoreCloneClone.clone (self : Agent) : Result Agent := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::Agent}]
+    Source: 'src/lib.rs', lines 401:9-401:14 -/
+@[reducible]
+def Agent.Insts.CoreCloneClone : core.clone.Clone Agent := {
+  clone := Agent.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::Agent}]
+    Source: 'src/lib.rs', lines 401:16-401:20 -/
+@[reducible]
+def Agent.Insts.CoreMarkerCopy : core.marker.Copy Agent := {
+  cloneInst := Agent.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::Input]
+    Source: 'src/lib.rs', lines 408:0-412:1
+    Visibility: public -/
+@[discriminant isize]
+inductive Input where
+| Empty : Input
+| Draft : Input
+| Unknown : Input
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::Input}::clone]:
+    Source: 'src/lib.rs', lines 407:9-407:14
+    Visibility: public -/
+def Input.Insts.CoreCloneClone.clone (self : Input) : Result Input := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::Input}]
+    Source: 'src/lib.rs', lines 407:9-407:14 -/
+@[reducible]
+def Input.Insts.CoreCloneClone : core.clone.Clone Input := {
+  clone := Input.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::Input}]
+    Source: 'src/lib.rs', lines 407:16-407:20 -/
+@[reducible]
+def Input.Insts.CoreMarkerCopy : core.marker.Copy Input := {
+  cloneInst := Input.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::Delivered]
+    Source: 'src/lib.rs', lines 416:0-420:1
+    Visibility: public -/
+@[discriminant isize]
+inductive Delivered where
+| Undelivered : Delivered
+| Executed : Delivered
+| Uncertain : Delivered
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::Delivered}::clone]:
+    Source: 'src/lib.rs', lines 415:9-415:14
+    Visibility: public -/
+def Delivered.Insts.CoreCloneClone.clone
+  (self : Delivered) : Result Delivered := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::Delivered}]
+    Source: 'src/lib.rs', lines 415:9-415:14 -/
+@[reducible]
+def Delivered.Insts.CoreCloneClone : core.clone.Clone Delivered := {
+  clone := Delivered.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::Delivered}]
+    Source: 'src/lib.rs', lines 415:16-415:20 -/
+@[reducible]
+def Delivered.Insts.CoreMarkerCopy : core.marker.Copy Delivered := {
+  cloneInst := Delivered.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::ResendFacts]
+    Source: 'src/lib.rs', lines 423:0-442:1
+    Visibility: public -/
+structure ResendFacts where
+  tried : Bool
+  last_nudge : Bool
+  nudge_sent : Bool
+  blocked : Bool
+  agent : Agent
+  enter_used : Bool
+  input : Input
+  own : Bool
+  pasted : Bool
+  delivered : Delivered
+  overdue : Bool
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::ResendFacts}::clone]:
+    Source: 'src/lib.rs', lines 422:9-422:14
+    Visibility: public -/
+def ResendFacts.Insts.CoreCloneClone.clone
+  (self : ResendFacts) : Result ResendFacts := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::ResendFacts}]
+    Source: 'src/lib.rs', lines 422:9-422:14 -/
+@[reducible]
+def ResendFacts.Insts.CoreCloneClone : core.clone.Clone ResendFacts := {
+  clone := ResendFacts.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::ResendFacts}]
+    Source: 'src/lib.rs', lines 422:16-422:20 -/
+@[reducible]
+def ResendFacts.Insts.CoreMarkerCopy : core.marker.Copy ResendFacts := {
+  cloneInst := ResendFacts.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::Skip]
+    Source: 'src/lib.rs', lines 445:0-454:1
+    Visibility: public -/
+@[discriminant isize]
+inductive Skip where
+| Codex : Skip
+| EnterUsed : Skip
+| Unreadable : Skip
+| Empty : Skip
+| Pasted : Skip
+| Other : Skip
+| Restored : Skip
+| Uncertain : Skip
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::Skip}::clone]:
+    Source: 'src/lib.rs', lines 444:9-444:14
+    Visibility: public -/
+def Skip.Insts.CoreCloneClone.clone (self : Skip) : Result Skip := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::Skip}]
+    Source: 'src/lib.rs', lines 444:9-444:14 -/
+@[reducible]
+def Skip.Insts.CoreCloneClone : core.clone.Clone Skip := {
+  clone := Skip.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::Skip}]
+    Source: 'src/lib.rs', lines 444:16-444:20 -/
+@[reducible]
+def Skip.Insts.CoreMarkerCopy : core.marker.Copy Skip := {
+  cloneInst := Skip.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::Block]
+    Source: 'src/lib.rs', lines 457:0-461:1
+    Visibility: public -/
+@[discriminant isize]
+inductive Block where
+| Codex : Block
+| Overdue : Block
+| Draft : Block
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::Block}::clone]:
+    Source: 'src/lib.rs', lines 456:9-456:14
+    Visibility: public -/
+def Block.Insts.CoreCloneClone.clone (self : Block) : Result Block := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::Block}]
+    Source: 'src/lib.rs', lines 456:9-456:14 -/
+@[reducible]
+def Block.Insts.CoreCloneClone : core.clone.Clone Block := {
+  clone := Block.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::Block}]
+    Source: 'src/lib.rs', lines 456:16-456:20 -/
+@[reducible]
+def Block.Insts.CoreMarkerCopy : core.marker.Copy Block := {
+  cloneInst := Block.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::ResendStep]
+    Source: 'src/lib.rs', lines 464:0-475:1
+    Visibility: public -/
+@[discriminant isize]
+inductive ResendStep where
+| Enter : ResendStep
+| Check : Skip → ResendStep
+| Nudge : ResendStep
+| Block : Block → ResendStep
+| Exhausted : ResendStep
+| Wait : ResendStep
+
+/-- [inbox_core::{impl core::clone::Clone for inbox_core::ResendStep}::clone]:
+    Source: 'src/lib.rs', lines 463:9-463:14
+    Visibility: public -/
+def ResendStep.Insts.CoreCloneClone.clone
+  (self : ResendStep) : Result ResendStep := do
+  ok self
+
+/-- Trait implementation: [inbox_core::{impl core::clone::Clone for inbox_core::ResendStep}]
+    Source: 'src/lib.rs', lines 463:9-463:14 -/
+@[reducible]
+def ResendStep.Insts.CoreCloneClone : core.clone.Clone ResendStep := {
+  clone := ResendStep.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [inbox_core::{impl core::marker::Copy for inbox_core::ResendStep}]
+    Source: 'src/lib.rs', lines 463:16-463:20 -/
+@[reducible]
+def ResendStep.Insts.CoreMarkerCopy : core.marker.Copy ResendStep := {
+  cloneInst := ResendStep.Insts.CoreCloneClone
+}
+
+/-- [inbox_core::resend_step]:
+    Source: 'src/lib.rs', lines 477:0-519:1
+    Visibility: public -/
+def resend_step (f : ResendFacts) : Result ResendStep := do
+  let claude ←
+    match f.agent with
+    | Agent.Claude => ok true
+    | Agent.Other => ok false
+  if f.tried
+  then
+    if f.last_nudge
+    then ok ResendStep.Exhausted
+    else
+      if f.nudge_sent
+      then ok ResendStep.Exhausted
+      else
+        if f.blocked
+        then ok ResendStep.Exhausted
+        else
+          if claude
+          then
+            if f.overdue
+            then ok (ResendStep.Block Block.Overdue)
+            else
+              match f.input with
+              | Input.Empty => ok ResendStep.Nudge
+              | Input.Draft => ok (ResendStep.Block Block.Draft)
+              | Input.Unknown => ok ResendStep.Wait
+          else ok (ResendStep.Block Block.Codex)
+  else
+    if claude
+    then
+      if f.enter_used
+      then ok (ResendStep.Check Skip.EnterUsed)
+      else
+        match f.input with
+        | Input.Empty => ok (ResendStep.Check Skip.Empty)
+        | Input.Draft =>
+          if f.pasted
+          then ok (ResendStep.Check Skip.Pasted)
+          else
+            if f.own
+            then
+              match f.delivered with
+              | Delivered.Undelivered => ok ResendStep.Enter
+              | Delivered.Executed => ok (ResendStep.Check Skip.Restored)
+              | Delivered.Uncertain => ok (ResendStep.Check Skip.Uncertain)
+            else ok (ResendStep.Check Skip.Other)
+        | Input.Unknown => ok (ResendStep.Check Skip.Unreadable)
+    else ok (ResendStep.Check Skip.Codex)
+
 end inbox_core
