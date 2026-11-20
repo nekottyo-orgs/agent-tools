@@ -661,17 +661,137 @@ fn instr_brief(l: &Line) -> Option<(i64, Option<String>)> {
 /// classify は Skip にするので別に数える。モデルに送られないローカルコマンド (/compact など、<command-name> で始まる) と
 /// task-notification と Stop hook の再開は起点にしない
 fn is_turn(l: &Line) -> bool {
-    if l.typ != "user" || core::excluded(l) {
-        return false;
+    l.typ == "user" && !core::excluded(l) && l.content.as_deref().is_some_and(is_input)
+}
+
+/// pane が受けた入力として数える内容か。turn の起点とキューの pending で同じ基準を使う
+fn is_input(c: &str) -> bool {
+    core::trim_left(c).starts_with("<command-message>")
+        || matches!(
+            core::classify(c),
+            Class::Instr | Class::Paste | Class::HerdrMsg
+        )
+}
+
+/// キューに残っている件数の上限。session が落ちて dequeue / remove が書かれなかった行が溜まり続けないよう、古い方から捨てる
+const QUEUE_MAX: usize = 256;
+/// 件数に数えない分も含めて、FIFO と content の突き合わせ用に覚えておく上限
+const QUEUE_KEEP: usize = QUEUE_MAX * 4;
+
+/// transcript の queue-operation を畳んだ、pane の入力キュー。Lean の model の外 (core.rs には置かない)。
+/// 実 transcript で確かめた形:
+/// - enqueue は content を持つ。dequeue は content を持たず先頭から外す。FIFO と content の無い remove、
+///   dequeue の書かれない user 行・queued_command への到達を下の規則で畳むと、561 session (jsonl) の replay で、
+///   後に turn が続くのに残る入力らしい行は 1 件 (入力に数えない task-notification) になった。
+///   残りは session の終わりに未到達だった行 (EOF)
+/// - remove は enqueue と同じ content と reason を持つ (content の無いものもあり、そのときは最古の行を外す)。
+///   reason が dropped_by_hook 以外は届いた (mid-turn に取り込まれた)
+/// - dequeue が書かれないまま同じ content の user 行・queued_command の attachment で届く入力は、その行を外す
+///   (届いた時刻は user 行側が持つので delivered_ts には触れない)
+/// - popAll は入力欄へ戻されたのでキューが空になる
+/// - queued_command の attachment の時刻は送った時刻 (enqueue と同じ) で、届いた時刻は remove の時刻。
+///   attachment は remove と同じ content を持つので、キューの出入りは queue-operation だけから取る
+#[derive(Clone, Default)]
+pub struct Queue {
+    /// (enqueue の時刻, 入力として数えるか, content の hash)。content は大きいので持たない
+    items: Vec<(i64, bool, u64)>,
+    /// 入力がキューを出て pane に届いた最後の時刻 (dequeue と、remove の reason が dropped_by_hook 以外)
+    delivered_ts: Option<i64>,
+    /// dequeue / remove で出たが、まだ user 行・queued_command が来ていない入力の hash。
+    /// 同じ content の別の入力を、その到達で二重に外さないために持つ
+    claimed: Vec<u64>,
+    /// items の先頭のうち、上限 QUEUE_MAX を超えて pending に数えない件数。FIFO と content の突き合わせには残す
+    skip: usize,
+}
+
+fn content_hash(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.trim().hash(&mut h);
+    h.finish()
+}
+
+impl Queue {
+    fn apply(&mut self, ts: i64, v: &Value) {
+        let content = v.get("content").and_then(Value::as_str).unwrap_or("");
+        match v.get("operation").and_then(Value::as_str) {
+            Some("enqueue") => {
+                self.items
+                    .push((ts, is_input(content), content_hash(content)));
+                if self.items.len() - self.skip > QUEUE_MAX {
+                    self.skip += 1;
+                }
+                // dequeue / remove が書かれない session で items が増え続けないよう、突き合わせ用も打ち切る
+                if self.items.len() > QUEUE_KEEP {
+                    self.take(0);
+                }
+            }
+            Some("dequeue") if !self.items.is_empty() => {
+                let it = self.take(0);
+                self.claim(it);
+                self.deliver(ts, it.1);
+            }
+            Some("remove") => {
+                let h = content_hash(content);
+                let pos = if content.is_empty() {
+                    (!self.items.is_empty()).then_some(0)
+                } else {
+                    self.items.iter().position(|x| x.2 == h)
+                };
+                if let Some(i) = pos {
+                    let it = self.take(i);
+                    if v.get("reason").and_then(Value::as_str) != Some("dropped_by_hook") {
+                        self.claim(it);
+                        self.deliver(ts, it.1);
+                    }
+                }
+            }
+            Some("popAll") => {
+                self.items.clear();
+                self.claimed.clear();
+                self.skip = 0;
+            }
+            _ => {}
+        }
     }
-    l.content.as_deref().is_some_and(|c| {
-        let t = core::trim_left(c);
-        t.starts_with("<command-message>")
-            || matches!(
-                core::classify(c),
-                Class::Instr | Class::Paste | Class::HerdrMsg
-            )
-    })
+
+    /// dequeue が書かれないまま user 行・queued_command で届いた入力。その content の最初の一致を外す
+    fn arrived(&mut self, content: &str) {
+        let h = content_hash(content);
+        // dequeue / remove が既に外した入力の到達なら、同じ content の別の入力は残す
+        if let Some(i) = self.claimed.iter().position(|&c| c == h) {
+            self.claimed.remove(i);
+        } else if let Some(i) = self.items.iter().position(|x| x.2 == h) {
+            self.take(i);
+        }
+    }
+
+    fn take(&mut self, i: usize) -> (i64, bool, u64) {
+        self.skip = self.skip.saturating_sub(usize::from(i < self.skip));
+        self.items.remove(i)
+    }
+
+    fn deliver(&mut self, ts: i64, inp: bool) {
+        if inp {
+            self.delivered_ts = Some(self.delivered_ts.map_or(ts, |p| p.max(ts)));
+        }
+    }
+
+    /// 入力を dequeue / remove で外したとき、後に来るその到達を数え済みにする
+    fn claim(&mut self, it: (i64, bool, u64)) {
+        if it.1 {
+            self.claimed.push(it.2);
+            if self.claimed.len() > QUEUE_MAX {
+                self.claimed.remove(0);
+            }
+        }
+    }
+
+    /// 届いていない入力の件数と、その最古の enqueue の時刻
+    pub fn pending(&self) -> (usize, Option<i64>) {
+        let ts = || self.items[self.skip..].iter().filter(|x| x.1).map(|x| x.0);
+        (ts().count(), ts().min())
+    }
 }
 
 /// 解析結果のキャッシュ。開いている Timeline は 1 つなので 1 件だけ持つ
@@ -726,6 +846,14 @@ pub struct BriefTracker {
     pub last_brief_ts: Option<i64>,
     /// 最後に pane が受けた入力 (人の指示・貼り付け・他 pane からの message) の時刻。working の経過の起点
     pub last_turn_ts: Option<i64>,
+    pub queue: Queue,
+}
+
+impl BriefTracker {
+    /// 最後に入力が pane へ届いた時刻。turn の起点に、キューから出て mid-turn に取り込まれた入力を足したもの
+    pub fn last_input_ts(&self) -> Option<i64> {
+        self.last_turn_ts.max(self.queue.delivered_ts)
+    }
 }
 
 /// 全 pane の行にゴールと進捗を出すための軽い追跡。Timeline 用の 1 件キャッシュ (Transcripts) とは別に持つ
@@ -752,7 +880,38 @@ impl Briefs {
         self.read_bytes += buf.len() as u64;
         // 書きかけの行は次の周期に回す
         let end = buf.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
-        for l in parse_lines(&buf[..end]) {
+        let text = String::from_utf8_lossy(&buf[..end]);
+        // parse_lines は split('\n') と同じ行数・同じ並びで返すので zip できる。queue は順序どおりに畳む
+        for (raw, l) in text.split('\n').zip(parse_lines(&buf[..end])) {
+            if raw.contains("\"type\":\"queue-operation\"") {
+                if let Ok(v) = serde_json::from_str::<Value>(raw) {
+                    let ts = v
+                        .get("timestamp")
+                        .and_then(Value::as_str)
+                        .and_then(parse_time);
+                    if let (Some(ts), Some("queue-operation")) =
+                        (ts, v.get("type").and_then(Value::as_str))
+                    {
+                        t.queue.apply(ts, &v);
+                    }
+                }
+            } else if raw.contains("\"queued_command\"") {
+                if let Ok(v) = serde_json::from_str::<Value>(raw) {
+                    let a = v.get("attachment");
+                    if a.and_then(|a| a.get("type")).and_then(Value::as_str)
+                        == Some("queued_command")
+                    {
+                        if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(Value::as_str) {
+                            t.queue.arrived(p);
+                        }
+                    }
+                }
+            }
+            if l.typ == "user" && !core::excluded(&l) {
+                if let Some(c) = l.content.as_deref() {
+                    t.queue.arrived(c);
+                }
+            }
             let Some(ts) = l.ts else { continue };
             t.first_ts = Some(t.first_ts.map_or(ts, |f| f.min(ts)));
             if is_turn(&l) {
@@ -1151,6 +1310,322 @@ mod tests {
             t1,
             "ローカルコマンドは turn の起点にならないはず"
         );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    fn qline(op: &str, at: &str, content: &str, reason: &str) -> String {
+        let mut v =
+            serde_json::json!({"type": "queue-operation", "operation": op, "timestamp": at});
+        if !content.is_empty() {
+            v["content"] = content.into();
+        }
+        if !reason.is_empty() {
+            v["reason"] = reason.into();
+        }
+        v.to_string() + "\n"
+    }
+
+    /// 架空の queue-operation の列。実 transcript で確かめた形 (dequeue は content 無し、remove は reason 付き) に揃える
+    fn queue_script() -> Vec<String> {
+        let msg = "<pasted_content id=\"a1\">\n[herdr-message] from 窓口 (wA:p1)\n\n続きをお願いします\n</pasted_content>";
+        let note = "<task-notification>\n<task-id>x</task-id>\n</task-notification>";
+        vec![
+            // 入力が届いて処理中
+            qline("enqueue", "2026-01-02T03:00:00Z", "実装して", ""),
+            qline("dequeue", "2026-01-02T03:00:00Z", "", ""),
+            // 処理中に他 pane の message が来てキューに残る (未到達)
+            qline("enqueue", "2026-01-02T03:01:00Z", msg, ""),
+            // 3 分後に mid-turn で取り込まれる (届いた)
+            qline("remove", "2026-01-02T03:04:00Z", msg, "absorbed_mid_turn"),
+            // task-notification は入力に数えない。dequeue は FIFO なので先に出る
+            qline("enqueue", "2026-01-02T03:05:00Z", note, ""),
+            qline("enqueue", "2026-01-02T03:06:00Z", "続けて", ""),
+            qline("dequeue", "2026-01-02T03:07:00Z", "", ""),
+            qline("dequeue", "2026-01-02T03:09:00Z", "", ""),
+            // hook に捨てられた入力は届いていない。popAll は入力欄に戻されたのでキューが空になる
+            qline("enqueue", "2026-01-02T03:10:00Z", "捨てられる", ""),
+            qline(
+                "remove",
+                "2026-01-02T03:11:00Z",
+                "捨てられる",
+                "dropped_by_hook",
+            ),
+            qline("enqueue", "2026-01-02T03:12:00Z", "戻される", ""),
+            qline("popAll", "2026-01-02T03:13:00Z", "戻される", ""),
+        ]
+    }
+
+    #[test]
+    fn queue_separates_pending_from_delivered() {
+        let d = tmp("queue");
+        let f = d.join("s.jsonl");
+        let script = queue_script();
+        let t = |s: &str| parse_time(s);
+        // (取り込んだ行数, pending, 最古の enqueue, 最後に届いた時刻)
+        let expect = [
+            (2, 0, None, t("2026-01-02T03:00:00Z")),
+            (3, 1, t("2026-01-02T03:01:00Z"), t("2026-01-02T03:00:00Z")),
+            (4, 0, None, t("2026-01-02T03:04:00Z")),
+            (6, 1, t("2026-01-02T03:06:00Z"), t("2026-01-02T03:04:00Z")),
+            (7, 1, t("2026-01-02T03:06:00Z"), t("2026-01-02T03:04:00Z")),
+            (8, 0, None, t("2026-01-02T03:09:00Z")),
+            (10, 0, None, t("2026-01-02T03:09:00Z")),
+            (12, 0, None, t("2026-01-02T03:09:00Z")),
+        ];
+        let mut b = Briefs::default();
+        let mut done = 0;
+        for (n, pending, oldest, last) in expect {
+            let chunk: String = script[done..n].concat();
+            done = n;
+            let mut o = fs::OpenOptions::new();
+            o.create(true).append(true);
+            o.open(&f).unwrap().write_all(chunk.as_bytes()).unwrap();
+            let tr = b.scan(&f).unwrap();
+            assert_eq!(tr.queue.pending(), (pending, oldest), "{n} 行目まで");
+            assert_eq!(tr.last_input_ts(), last, "{n} 行目まで");
+        }
+        // 1 回で全部読んでも、途中まで読んでから続きを読んでも同じ状態になる
+        let once = Briefs::default().scan(&f).unwrap();
+        let last = b.scan(&f).unwrap();
+        assert_eq!(once.queue.pending(), last.queue.pending());
+        assert_eq!(once.last_input_ts(), last.last_input_ts());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    fn uline(at: &str, content: &str) -> String {
+        serde_json::json!({"type": "user", "timestamp": at, "message": {"content": content}})
+            .to_string()
+            + "\n"
+    }
+
+    fn aline(at: &str, prompt: &str) -> String {
+        serde_json::json!({"type": "attachment", "timestamp": at,
+            "attachment": {"type": "queued_command", "prompt": prompt}})
+        .to_string()
+            + "\n"
+    }
+
+    fn pending_of(f: &Path) -> (usize, Option<i64>) {
+        Briefs::default().scan(f).unwrap().queue.pending()
+    }
+
+    #[test]
+    fn queue_same_content_is_not_consumed_twice() {
+        let d = tmp("queue-same-content");
+        let f = d.join("s.jsonl");
+        let e = |at| qline("enqueue", at, "続けて", "");
+        // dequeue が 1 件外し、その到達の user 行で 2 件目まで外してはいけない
+        let s = [
+            e("2026-01-02T03:00:00Z"),
+            e("2026-01-02T03:00:01Z"),
+            qline("dequeue", "2026-01-02T03:01:00Z", "", ""),
+            uline("2026-01-02T03:01:00Z", "続けて"),
+        ]
+        .concat();
+        fs::write(&f, &s).unwrap();
+        assert_eq!(pending_of(&f).0, 1, "dequeue と user 行で 2 件消えた");
+        // remove と同じ content の queued_command も同様
+        let s = [
+            e("2026-01-02T03:00:00Z"),
+            e("2026-01-02T03:00:01Z"),
+            qline(
+                "remove",
+                "2026-01-02T03:01:00Z",
+                "続けて",
+                "absorbed_mid_turn",
+            ),
+            aline("2026-01-02T03:00:00Z", "続けて"),
+        ]
+        .concat();
+        fs::write(&f, &s).unwrap();
+        assert_eq!(pending_of(&f).0, 1, "remove と attachment で 2 件消えた");
+    }
+
+    #[test]
+    fn queue_keeps_bounded_memory_without_dequeue() {
+        let mut q = Queue::default();
+        for i in 0..QUEUE_KEEP * 3 {
+            let v = serde_json::json!({"operation": "enqueue", "content": format!("入力{i}")});
+            q.apply(0, &v);
+        }
+        assert!(q.items.len() <= QUEUE_KEEP, "items が上限なく増えた");
+        assert_eq!(q.pending().0, QUEUE_MAX);
+    }
+
+    #[test]
+    fn queue_cap_eviction_still_matches_by_content() {
+        let d = tmp("queue-cap-content");
+        let f = d.join("s.jsonl");
+        let mut s = String::new();
+        for i in 0..=QUEUE_MAX {
+            let c = format!("入力{i}");
+            s += &qline("enqueue", "2026-01-02T03:00:00Z", &c, "");
+        }
+        // 上限で数えなくなった先頭を content で外し、残りを dequeue すると 0 件になる
+        s += &qline(
+            "remove",
+            "2026-01-02T04:00:00Z",
+            "入力0",
+            "absorbed_mid_turn",
+        );
+        for _ in 0..QUEUE_MAX {
+            s += &qline("dequeue", "2026-01-02T05:00:00Z", "", "");
+        }
+        fs::write(&f, &s).unwrap();
+        assert_eq!(
+            pending_of(&f).0,
+            0,
+            "上限で捨てた入力の remove で FIFO がずれた"
+        );
+        // dequeue の無い到達 (user 行) でも同じ
+        let s = s
+            .lines()
+            .take(QUEUE_MAX + 1)
+            .map(|l| l.to_string() + "\n")
+            .collect::<String>()
+            + &uline("2026-01-02T04:00:00Z", "入力0");
+        fs::write(&f, &s).unwrap();
+        assert_eq!(pending_of(&f).0, QUEUE_MAX, "到達した先頭が pending のまま");
+    }
+
+    #[test]
+    fn queue_cap_eviction_keeps_fifo_alignment() {
+        let d = tmp("queue-cap-fifo");
+        let f = d.join("s.jsonl");
+        let note = "<task-notification>done</task-notification>";
+        let mut s = String::new();
+        for i in 0..QUEUE_MAX {
+            s += &qline(
+                "enqueue",
+                &format!("2026-01-02T03:{:02}:{:02}Z", i / 60, i % 60),
+                note,
+                "",
+            );
+        }
+        s += &qline("enqueue", "2026-01-02T04:00:00Z", "実装して", "");
+        // 実キューは 257 件。通知 256 回の dequeue では指示を外さない
+        for _ in 0..QUEUE_MAX {
+            s += &qline("dequeue", "2026-01-02T05:00:00Z", "", "");
+        }
+        fs::write(&f, &s).unwrap();
+        assert_eq!(pending_of(&f).0, 1, "上限で捨てた後に指示が先に外れた");
+    }
+
+    #[test]
+    fn queue_contentless_remove_drops_oldest() {
+        let d = tmp("queue-contentless");
+        let f = d.join("s.jsonl");
+        // content の無い remove が最古の A を外さないと、dequeue が A を外して B が残る
+        let s = [
+            qline("enqueue", "2026-01-02T03:00:00Z", "A", ""),
+            qline("enqueue", "2026-01-02T03:01:00Z", "実装して", ""),
+            qline("remove", "2026-01-02T03:02:00Z", "", "dropped_by_hook"),
+            qline("dequeue", "2026-01-02T03:03:00Z", "", ""),
+        ]
+        .concat();
+        fs::write(&f, s).unwrap();
+        assert_eq!(
+            pending_of(&f),
+            (0, None),
+            "content の無い remove で dequeue がずれたはず"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn queue_arrival_without_dequeue_by_user_line_or_attachment() {
+        let d = tmp("queue-arrived");
+        let f = d.join("s.jsonl");
+        let at = "2026-01-02T03:05:00Z";
+        let enq = qline("enqueue", "2026-01-02T03:00:00Z", "続けて", "");
+        fs::write(&f, &enq).unwrap();
+        assert_eq!(pending_of(&f).0, 1, "届く前は pending のはず");
+        // user 行 (前後の空白は trim して比較する)
+        fs::write(&f, enq.clone() + &uline(at, " 続けて\n")).unwrap();
+        assert_eq!(
+            pending_of(&f),
+            (0, None),
+            "user 行で届いたのに pending のまま"
+        );
+        // meta の user 行は届いた扱いにしない
+        let meta = serde_json::json!({"type":"user","timestamp":at,"isMeta":true,"message":{"content":"続けて"}});
+        fs::write(&f, enq.clone() + &(meta.to_string() + "\n")).unwrap();
+        assert_eq!(pending_of(&f).0, 1, "meta の user 行は除くはず");
+        // queued_command の attachment
+        fs::write(&f, enq.clone() + &aline(at, "続けて")).unwrap();
+        assert_eq!(
+            pending_of(&f),
+            (0, None),
+            "attachment で届いたのに pending のまま"
+        );
+        // 届いた時刻には触れない
+        let tr = Briefs::default().scan(&f).unwrap();
+        assert_eq!(
+            tr.queue.delivered_ts, None,
+            "delivered_ts は user 行側が持つはず"
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn queue_arrival_split_scan_matches_single_scan() {
+        let d = tmp("queue-arrived-split");
+        let f = d.join("s.jsonl");
+        let script = [
+            qline("enqueue", "2026-01-02T03:00:00Z", "一つ目", ""),
+            qline("enqueue", "2026-01-02T03:01:00Z", "二つ目", ""),
+            uline("2026-01-02T03:02:00Z", "一つ目"),
+            qline("enqueue", "2026-01-02T03:03:00Z", "三つ目", ""),
+            aline("2026-01-02T03:04:00Z", "二つ目"),
+        ];
+        let mut b = Briefs::default();
+        let mut done = 0;
+        for n in [1, 3, 4, 5] {
+            let mut o = fs::OpenOptions::new();
+            o.create(true).append(true);
+            o.open(&f)
+                .unwrap()
+                .write_all(script[done..n].concat().as_bytes())
+                .unwrap();
+            done = n;
+            b.scan(&f).unwrap();
+        }
+        let split = b.scan(&f).unwrap();
+        let once = Briefs::default().scan(&f).unwrap();
+        assert_eq!(
+            split.queue.pending(),
+            once.queue.pending(),
+            "分割 scan と 1 回 scan が違う"
+        );
+        assert_eq!(
+            once.queue.pending(),
+            (1, parse_time("2026-01-02T03:03:00Z"))
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn queue_ignores_unpaired_remove_and_resets_on_shrink() {
+        let d = tmp("queue-shrink");
+        let f = d.join("s.jsonl");
+        // enqueue の無い remove と、先頭が空のキューへの dequeue は無視する
+        let mut s = qline(
+            "remove",
+            "2026-01-02T03:00:00Z",
+            "知らない",
+            "absorbed_mid_turn",
+        );
+        s += &qline("dequeue", "2026-01-02T03:00:01Z", "", "");
+        s += &qline("enqueue", "2026-01-02T03:01:00Z", "直して", "");
+        fs::write(&f, &s).unwrap();
+        let mut b = Briefs::default();
+        let tr = b.scan(&f).unwrap();
+        assert_eq!(tr.queue.pending(), (1, parse_time("2026-01-02T03:01:00Z")));
+        assert_eq!(tr.last_input_ts(), None);
+        // 縮んだら別物として最初から読む
+        fs::write(&f, qline("enqueue", "2026-01-02T04:00:00Z", "別の指示", "")).unwrap();
+        let tr = b.scan(&f).unwrap();
+        assert_eq!(tr.queue.pending(), (1, parse_time("2026-01-02T04:00:00Z")));
         let _ = fs::remove_dir_all(&d);
     }
 

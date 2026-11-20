@@ -1211,6 +1211,50 @@ fn json_inbox_counts_attributed_msgs_only() {
 }
 
 #[test]
+fn json_queue_separates_pending_from_delivered() {
+    let fx = Fx::new("json-queue");
+    let msg = "<pasted_content id=\"a1\">\n[herdr-message] from 窓口 (wA:p1)\n\n続きをお願いします\n</pasted_content>";
+    let q = |op: &str, at: &str, reason: Option<&str>| {
+        let mut v =
+            json!({"type": "queue-operation", "operation": op, "timestamp": at, "content": msg});
+        if let Some(r) = reason {
+            v["reason"] = r.into();
+        }
+        v
+    };
+    let base = [
+        user("2026-01-02T03:00:00Z", "実装して"),
+        q("enqueue", "2026-01-02T03:01:00Z", None),
+    ];
+    fx.transcript(SID2, &base);
+    // 2026-01-02T03:00:00Z = 1767322800
+    let v = json_of(&fx.run(&["--json"]));
+    assert_eq!(
+        jpane(&v, "wA:p2")["queue"],
+        json!({"pending": 1, "oldest_at": 1767322860, "last_input_at": 1767322800}),
+        "enqueue だけなら未到達 1 件のはず"
+    );
+    assert_eq!(
+        jpane(&v, "wA:p3")["queue"],
+        json!(null),
+        "transcript が無い pane は null のはず"
+    );
+    let mut all = base.to_vec();
+    all.push(q(
+        "remove",
+        "2026-01-02T03:04:00Z",
+        Some("absorbed_mid_turn"),
+    ));
+    fx.transcript(SID2, &all);
+    let v = json_of(&fx.run(&["--json"]));
+    assert_eq!(
+        jpane(&v, "wA:p2")["queue"],
+        json!({"pending": 0, "oldest_at": null, "last_input_at": 1767323040}),
+        "remove で届いたら pending は 0、last_input_at は remove の時刻のはず"
+    );
+}
+
+#[test]
 fn json_working_secs_never_negative() {
     let fx = Fx::new("json-working-future");
     // 起点が now より後 (now の取得後に入力が届いた状態) を未来の時刻で作る

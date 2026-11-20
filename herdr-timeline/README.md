@@ -13,7 +13,7 @@ herdr (端末の multiplexer) の pane を「要対応 / 作業中 / done・idle
 - 読むだけで書き込まない。例外は Enter の `herdr tab focus` だけで、pane には入力しない。サーバを立てない
 - 読むもの
   - herdr の `pane list` / `tab list` / `workspace list` (session ごと)
-  - Claude Code の transcript (`<projects>/<dir>/<session_id>.jsonl`)。全 pane の transcript は、ゴールを出すために前回読んだ位置から追記ぶんだけを読む (brief のパスと、最初と最後の入力の時刻だけを拾う)。Timeline は選んだ pane と `--timeline` の pane だけ、全体を読む。session_id は英数字と `. _ -` だけ、先頭が `.` でないものしか使わない
+  - Claude Code の transcript (`<projects>/<dir>/<session_id>.jsonl`)。全 pane の transcript は、ゴールを出すために前回読んだ位置から追記ぶんだけを読む (brief のパスと、最初と最後の入力の時刻だけを拾う。queue-operation (enqueue / dequeue / remove / popAll) も読み、キュー待ちの入力の件数と時刻を数える)。Timeline は選んだ pane と `--timeline` の pane だけ、全体を読む。session_id は英数字と `. _ -` だけ、先頭が `.` でないものしか使わない
   - run の `run.md` と `inbox/new`・`inbox/cur` の `*.msg` (それ以外のディレクトリは見ない)。pane 行の進捗には、名前 (`<prio>-<micros>-<tag>-<from>-<rand>.msg`) の tag が `progress` のものだけを開く。Timeline を出す pane には全部を開く
   - transcript の指示が指す brief (`brief-<name>.md`)
 - 外部入力 (transcript と inbox の本文、pane の label と title) は、端末に出す前に CSI 列を丸ごと落とし、残りの制御文字を空白にする
@@ -102,6 +102,7 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 | `status` | string | `blocked` / `working` / `idle` / `done` / `unknown` |
 | `working_secs` | integer か null | working のとき、transcript の最後の入力からの経過秒。起点が transcript から取れない (画面の `≥`) ときは null |
 | `inbox` | object か null | `count` (帰属する msg の件数) と `last_at` (最後の msg の時刻、epoch 秒、無ければ null)。transcript が無い、または最初の時刻が取れない pane は null。run が無いときは `count` 0 |
+| `queue` | object か null | `pending` (transcript の queue-operation で enqueue されて、dequeue / remove / popAll でまだ出ていない入力の件数。未到達でキュー待ち。dequeue が書かれず user 行・queued_command で届いた入力も届いた扱い)、`oldest_at` (その最古の enqueue の時刻、epoch 秒、無ければ null)、`last_input_at` (turn の起点と、キューから出て届いた入力の時刻の最大、epoch 秒、無ければ null。届いた入力は dequeue と、reason が `dropped_by_hook` 以外の remove)。transcript が無い、または最初の時刻が取れない pane は null。`working_secs` は変えない |
 | `anomaly` | string か null | status が working / blocked の pane だけ、画面の末尾 20 行 (`herdr pane read <PANE_ID> --lines 20`) を読み、一覧 (src/json.rs の定数 `ANOMALY_PATTERNS`。文字列の配列で、足すときはここに足す) の文字列を含めば、その一覧の要素を返す (複数なら配列の先頭側)。画面の文字列は出さない。それ以外の status、一致なし、`pane read` の失敗は null (失敗は `warnings` に積まない)。`--once` の画面には出さない |
 | `hidden` | boolean | 画面の既定で隠す pane か。常駐・dispatch で、blocked でないもの。`--show-resident` では変わらない |
 | `hidden_reason` | string か null | `resident` / `dispatch`。hidden でなければ null |
