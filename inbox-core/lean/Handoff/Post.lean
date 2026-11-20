@@ -49,6 +49,7 @@ theorem post_prefix (w : World) (hreg : ∀ p, w.fd p = true → w.reg p = true)
     | txCommit d x t _ _ hx _ => dsimp only; exact upd_some_pres _ _ _ ih (ih d x hx)
     | complete d x t hx _ _ => dsimp only; exact upd_some_pres _ _ _ ih (ih d x hx)
     | expire d x t hx _ => dsimp only; exact upd_some_pres _ _ _ ih (ih d x hx)
+    | notify h => cases h; exact ih
     | _ => exact ih
 
 /-! ### E2 -/
@@ -136,6 +137,16 @@ theorem post_inv7 (w : World) : ∀ s, Reach Config.post w s → Inv7 s := by
         have e : d' ≠ d := by intro e; subst e; rw [hx] at hy; cases hy; simp [hxt] at hyc
         have e2 : t' ≠ t := by intro e2; subst e2; rw [hft] at hf; cases hf; exact e rfl
         exact ⟨by simp [upd_apply, e2, hf], y, by simp [upd_apply, e, hy], hyc⟩
+    | sweep t d _ hf hp hc =>
+      refine ⟨?_, ?_, h3⟩
+      · intro d' y hy t' hyt
+        have hf' := h1 d' y hy t' hyt
+        have : t' ≠ t := by intro e; subst e; exact hc d' y hy hyt
+        simp [upd_apply, this, hf']
+      · intro d' t' hp'
+        obtain ⟨hf', y, hy, hyc⟩ := h2 d' t' hp'
+        have : t' ≠ t := by intro e; subst e; rw [hf] at hf'; cases hf'; exact hp hp'
+        exact ⟨by simp [upd_apply, this, hf'], y, hy, hyc⟩
     | expire d x t hx hxt =>
       refine ⟨?_, ?_, h3⟩
       · dsimp only; refine upd_some_pres _ _ _ h1 ?_; simp
@@ -143,6 +154,7 @@ theorem post_inv7 (w : World) : ∀ s, Reach Config.post w s → Inv7 s := by
         obtain ⟨hf, y, hy, hyc⟩ := h2 d' t' hp
         have e : d' ≠ d := by intro e; subst e; rw [hx] at hy; cases hy; simp [hxt] at hyc
         exact ⟨hf, y, by simp [upd_apply, e, hy], hyc⟩
+    | notify h => cases h; exact ⟨h1, h2, h3⟩
     | _ => exact ⟨h1, h2, h3⟩
 
 /-- claim した token は、process の消失・出力の切断・保存先の停止のどれが起きてもファイルに残る -/
@@ -185,7 +197,7 @@ theorem e4_of (c : Config) (hc : c.replyGate = true) (w : World) : E4Prop c w :=
       cases h; split
       · exact keep4 _ ih (fun x => by split <;> simp)
       · exact ih
-    | fire _ => exact keep4 _ ih (fun x => by split <;> simp)
+    | notify h => cases h; exact keep4 _ ih (fun x => by split <;> simp)
     | send m t p _ =>
       dsimp only; refine upd_some_pres _ _ _ ih ?_; intro hb; simp [newMsg] at hb
     | ack m x hx _ hg =>
@@ -216,9 +228,8 @@ theorem stage0_e4 (w : World) : E4Prop Config.stage0 w := e4_of _ rfl w
 
 /-! ### E5 -/
 
-theorem showNew_surfaces (ms : MId → Option Msg) (m : MId) (x : Msg) (hx : ms m = some x)
-    (hb : x.box = .new) : ∃ y, showNew ms m = some y ∧ y.surfaced = true :=
-  ⟨{ x with surfaced := true }, by simp [showNew, mapMsgs, hx, hb], rfl⟩
+theorem newIds_true (ms : MId → Option Msg) (m : MId) (x : Msg) (hx : ms m = some x)
+    (hb : x.box = .new) : newIds ms m = true := by simp [newIds, hx, hb]
 
 /-- new/ に残る報告は、次の張り直しでも人の発言でも窓口に出る。Reach を使わない構成上の定理で、
 中身は「張り直しと人の発言が new/ の残りを即時に全件出す」(README の前提 A7) に依る -/
@@ -227,9 +238,9 @@ theorem e5_of (c : Config) (h1 : c.rearmSurface = true) (h2 : c.humanSurface = t
   intro s _ m x hx hb
   refine ⟨fun s' h => ?_, fun s' h => ?_⟩
   · cases h with
-    | reveal => exact showNew_surfaces _ m x hx hb
+    | reveal => exact newIds_true _ m x hx hb
     | arm b hn => exact absurd ⟨h1, ⟨m, x, hx, hb⟩⟩ hn
-  · cases h; simp only [h2, ite_true]; exact showNew_surfaces _ m x hx hb
+  · cases h; simp only [h2, ite_true]; exact newIds_true _ m x hx hb
 
 theorem post_e5 (w : World) : E5Prop Config.post w := e5_of _ rfl rfl w
 /-- 移行期でもモデルの上では成り立つ。現実の PR 318 は 10 分の閾値と「同じ組は 1 回だけ」を通すので、
@@ -301,15 +312,6 @@ theorem post_orphan_sweepable (w : World) (s : State) (t : Tok) (d : DId)
     (hc : ∀ d' x, s.cue d' = some x → x.claim ≠ some t) :
     ∃ s', Step Config.post w s s' ∧ s'.file t = none :=
   ⟨_, Step.sweep s t d rfl hf hp hc, by simp⟩
-
-/-- 穴 2 の反例: 見ていない msg が new/ に無いまま fire でき、行き先は watchDie と同じ状態になる -/
-theorem pre_spurious_fire : ∃ s s', Reach Config.pre wOk s ∧ Step Config.pre wOk s s' ∧
-    s.armed = true ∧ s' = { s with armed := false } := by
-  have r1 : Reach Config.pre wOk { init with armed := true, msgs := unskip init.msgs } :=
-    Reach.step Reach.init (Step.rearm (Rearm.arm init false (by simp [Config.pre])))
-  refine ⟨_, _, r1, Step.fire _ rfl, rfl, ?_⟩
-  simp only [State.mk.injEq, true_and, and_true]
-  funext i; rfl
 
 /-- 穴 2: 通知は、new/ にあって seen に無い msg を少なくとも 1 件見せる -/
 theorem notify_shows_unseen : NotifyProp := by

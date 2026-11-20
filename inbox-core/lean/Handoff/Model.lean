@@ -96,6 +96,8 @@ structure State where
   replied : MId → Bool
   /-- state file に写した判断の一覧 (回答済みか) -/
   snapshot : DId → Option Bool
+  /-- 直近の張り直し・人の発言・通知が窓口に見せた msg -/
+  shown : MId → Bool
 
 def init : State where
   cue := fun _ => none
@@ -110,6 +112,7 @@ def init : State where
   detected := fun _ => false
   replied := fun _ => false
   snapshot := fun _ => none
+  shown := fun _ => false
 
 /-- 設計の flag。どれも修正前は false -/
 structure Config where
@@ -188,6 +191,19 @@ def unskip (ms : MId → Option Msg) := mapMsgs (fun x => { x with skipped := fa
 
 def HasNew (s : State) : Prop := ∃ m x, s.msgs m = some x ∧ x.box = .new
 
+/-- new/ にある msg の集合 -/
+def newIds (ms : MId → Option Msg) : MId → Bool :=
+  fun i => match ms i with
+    | some x => decide (x.box = .new)
+    | none => false
+/-- new/ にあって seen に無い msg の集合 -/
+def unseenIds (ms : MId → Option Msg) : MId → Bool :=
+  fun i => match ms i with
+    | some x => decide (x.box = .new ∧ x.skipped = false)
+    | none => false
+
+def HasUnseen (s : State) : Prop := ∃ m x, s.msgs m = some x ∧ x.box = .new ∧ x.skipped = false
+
 def toCur (x : Msg) (r : Res) : Msg := { x with box := .cur, res := r }
 
 /-- 故障。設計の flag に依らず、どの設定でも起きる -/
@@ -205,13 +221,22 @@ inductive Fault : State → State → Prop
 
 /-- 窓口の受信待ちの張り直し -/
 inductive Rearm (c : Config) : State → State → Prop
-  | reveal (s) : c.rearmSurface = true → HasNew s → Rearm c s { s with msgs := showNew s.msgs }
+  | reveal (s) : c.rearmSurface = true → HasNew s → Rearm c s { s with msgs := showNew s.msgs, shown := newIds s.msgs }
   | arm (s) (newOnly : Bool) : ¬ (c.rearmSurface = true ∧ HasNew s) →
-      Rearm c s { s with armed := true, msgs := if newOnly then skipNew s.msgs else unskip s.msgs }
+      Rearm c s { s with armed := true, shown := fun _ => false,
+                         msgs := if newOnly then skipNew s.msgs else unskip s.msgs }
 
 /-- 人の発言 (UserPromptSubmit の注入) -/
 inductive Human (c : Config) : State → State → Prop
-  | speak (s) : Human c s (if c.humanSurface = true then { s with msgs := showNew s.msgs } else s)
+  /-- 黙った発言は何も見せない。古い shown を残すと「前に見せた」ことが今回の発言の結果に見えるので、必ず上書きする -/
+  | speak (s) : Human c s (if c.humanSurface = true then { s with msgs := showNew s.msgs, shown := newIds s.msgs }
+    else { s with shown := fun _ => false })
+
+/-- watch の通知。watch は new/ に seen に無い msg があるときだけ行を出す (run-inbox.sh の cmd_watch)。
+何も出さずに止まるのは Fault.watchDie -/
+inductive Notify : State → State → Prop
+  | fire (s) : s.armed = true → HasUnseen s →
+      Notify s { s with armed := false, msgs := fireNew s.msgs, shown := unseenIds s.msgs }
 
 def newDec (w : World) (p : Pane) (k : Key) : Dec :=
   { prefixed := decide (k = .own), byFd := w.fd p, answered := false, claim := none, done := false }
@@ -253,6 +278,11 @@ inductive Step (c : Config) (w : World) : State → State → Prop
   | txCommit (s) (d : DId) (x : Dec) (t : Tok) :
       c.tokenFileTx = true → s.pending = some (d, t) → s.cue d = some x → x.claim = none →
       Step c w s { s with cue := upd s.cue d (some { x with claim := some t }), pending := none }
+  /-- decision-inbox の claim --token-file auto は claim の前に claims_dir を掃除し、DB の claim と token が
+  合わないファイルを lease 期限の 24 時間後に消す (sweep_claims)。model に時間が無いので「消しうる」だけを表す -/
+  | sweep (s) (t : Tok) (d : DId) : c.tokenFileTx = true → s.file t = some d → s.pending ≠ some (d, t) →
+      (∀ d' x, s.cue d' = some x → x.claim ≠ some t) →
+      Step c w s { s with file := upd s.file t none }
   | complete (s) (d : DId) (x : Dec) (t : Tok) :
       s.cue d = some x → x.claim = some t → (s.mem d = some t ∨ s.file t = some d) →
       Step c w s { s with cue := upd s.cue d (some { x with claim := none, done := true }),
@@ -269,7 +299,7 @@ inductive Step (c : Config) (w : World) : State → State → Prop
   -- inbox
   | send (s) (m : MId) (t : Tag) (p : Pane) : s.msgs m = none →
       Step c w s { s with msgs := upd s.msgs m (some (newMsg t p)) }
-  | fire (s) : s.armed = true → Step c w s { s with armed := false, msgs := fireNew s.msgs }
+  | notify {s s'} : Notify s s' → Step c w s s'
   | ack (s) (m : MId) (x : Msg) : s.msgs m = some x → x.box ≠ .cur →
       (c.replyGate = true → x.tag.needsReply = false) →
       Step c w s { s with msgs := upd s.msgs m (some (toCur x .none)) }
@@ -320,8 +350,11 @@ def E4Prop (c : Config) (w : World) : Prop :=
 /-- E5: new/ に残る報告は、次の張り直しでも人の発言でも窓口に出る -/
 def E5Prop (c : Config) (w : World) : Prop :=
   ∀ s, Reach c w s → ∀ m x, s.msgs m = some x → x.box = .new →
-    (∀ s', Rearm c s s' → ∃ y, s'.msgs m = some y ∧ y.surfaced = true) ∧
-    (∀ s', Human c s s' → ∃ y, s'.msgs m = some y ∧ y.surfaced = true)
+    (∀ s', Rearm c s s' → s'.shown m = true) ∧ (∀ s', Human c s s' → s'.shown m = true)
+
+/-- 通知は、seen に無い new/ の msg を少なくとも 1 件見せる -/
+def NotifyProp : Prop :=
+  ∀ s s', Notify s s' → ∃ m x, s.msgs m = some x ∧ x.box = .new ∧ x.skipped = false ∧ s'.shown m = true
 
 /-- 一元化: 復旧通知の一覧は Cue と一致する -/
 def RecoveryProp (c : Config) (w : World) : Prop :=
