@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.2.2](https://github.com/nekottyo/agent-tools/compare/bash-gates/v0.2.1...bash-gates/v0.2.2) - 2026-11-18
+
+### Changes
+- ci: PR に tool の label を付け、release notes を label で絞る by @nekottyo in https://github.com/nekottyo/agent-tools/pull/35
+
 ## [v0.2.1](https://github.com/nekottyo/agent-tools/compare/bash-gates/v0.2.0...bash-gates/v0.2.1) - 2026-11-15
 
 ### Changes
