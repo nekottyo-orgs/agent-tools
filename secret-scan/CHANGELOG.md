@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.1.2](https://github.com/nekottyo/agent-tools/compare/secret-scan/v0.1.1...secret-scan/v0.1.2) - 2026-11-18
+
+### Changes
+- ci: PR に tool の label を付け、release notes を label で絞る by @nekottyo in https://github.com/nekottyo/agent-tools/pull/35
+
 ## [v0.1.1](https://github.com/nekottyo/agent-tools/compare/secret-scan/v0.1.0...secret-scan/v0.1.1) - 2026-11-15
 
 ### Changes
