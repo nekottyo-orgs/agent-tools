@@ -4,6 +4,7 @@
 use inbox_core::*;
 use std::process::exit;
 
+mod end_marker;
 mod replace;
 
 const USAGE: &str = "使い方: inbox-core <op> <tag> <box> <sender> <header> <sent>
@@ -14,9 +15,11 @@ const USAGE: &str = "使い方: inbox-core <op> <tag> <box> <sender> <header> <s
   header: valid | invalid (ack-sender-gone と reply だけが読む)
   sent:   yes | no (reply だけが読む)
 出力: 1 行目 moved <box> <res> | unchanged | refused <理由>、2 行目以降 effect <副作用>
-  inbox-core lane <from> <panes> <idle> <working> <close_failed> <accepted> <req_accepted> <remaining> <waiting> <answered> <detected> <detected_at> <seen> <cleared> <replaced_at> <woke_at> <exhausted> <now> <cap_min>
+  inbox-core lane <from> <panes> <idle> <working> <close_failed> <accepted> <req_accepted> <remaining> <waiting> <answered> <detected> <detected_at> <seen> <cleared> <replaced_at> <woke_at> <exhausted> <now> <cap_min> [<kind> <marker> <ci_green> <other_org>]
     replaced_at: 差し替えた時刻 (0 は未差し替え)  woke_at: 起きた時刻 (0 は無し)  exhausted: 再送の段を使い切った (bool)
-    出力: none | replace | move <rule> <dest>
+    kind (任意の末尾 4 引数。20 個なら従来どおり、24 個なら kind を使う): unset|decision|monitor|research|implement
+      marker: その kind の終わりの印が成り立つ (implement は PR が merge 済み)  ci_green: PR の CI が通っている  other_org: PR の repo が自分の org でない (bool)
+    出力: none | replace | move <rule> <dest> | move end-marker done | move merge-wait human_action
     from: todo|worker|human_decision|human_action|done  panes: unknown|absent|closed|live  remaining: empty|nothing|other  bool: yes|no  数値: 10 進 (2^40 未満)
   inbox-core stalled <idle> <report> <assign> <now> <min>
     出力: active | due <時刻> | stalled report | stalled assign
@@ -193,7 +196,8 @@ fn rule_name(r: Rule) -> &'static str {
 }
 
 fn run_lane(a: &[String]) -> Option<String> {
-    if a.len() != 20 {
+    // 20 個は従来形、24 個は末尾に <kind> <marker> <ci_green> <other_org> を足した形
+    if a.len() != 20 && a.len() != 24 {
         return None;
     }
     let from = lane(&a[1])?;
@@ -231,10 +235,38 @@ fn run_lane(a: &[String]) -> Option<String> {
         exhausted: yn(&a[17])?,
     };
     let (now, cap) = (num(&a[18])?, num(&a[19])?);
-    Some(match replace::decide(from, f, s, now, cap) {
-        replace::Verdict::Stay => "none".into(),
-        replace::Verdict::Replace => "replace".into(),
-        replace::Verdict::Move(m) => format!("move {} {}", rule_name(m.rule), lane_name(m.dest)),
+    // kind を渡さない従来形は end_marker を通さず、出力を 1 バイトも変えない
+    if a.len() == 20 {
+        return Some(match replace::decide(from, f, s, now, cap) {
+            replace::Verdict::Stay => "none".into(),
+            replace::Verdict::Replace => "replace".into(),
+            replace::Verdict::Move(m) => {
+                format!("move {} {}", rule_name(m.rule), lane_name(m.dest))
+            }
+        });
+    }
+    let kind = match a[20].as_str() {
+        "unset" => end_marker::Kind::Unset,
+        "decision" => end_marker::Kind::Decision,
+        "monitor" => end_marker::Kind::Monitor,
+        "research" => end_marker::Kind::Research,
+        "implement" => end_marker::Kind::Implement,
+        _ => return None,
+    };
+    let k = end_marker::KindFacts {
+        kind,
+        marker: yn(&a[21])?,
+        ci_green: yn(&a[22])?,
+        other_org: yn(&a[23])?,
+    };
+    Some(match end_marker::judge(from, f, s, now, cap, k) {
+        end_marker::Verdict::Stay => "none".into(),
+        end_marker::Verdict::Replace => "replace".into(),
+        end_marker::Verdict::Move(m) => {
+            format!("move {} {}", rule_name(m.rule), lane_name(m.dest))
+        }
+        end_marker::Verdict::EndMarker => "move end-marker done".into(),
+        end_marker::Verdict::MergeWait => "move merge-wait human_action".into(),
     })
 }
 
@@ -534,8 +566,10 @@ mod tests {
             "move stall-cap human_action"
         );
         assert_eq!(
-            extra("lane worker live yes no no no no other no no yes 99000 yes no 0 0 yes 100000 30")
-                .unwrap(),
+            extra(
+                "lane worker live yes no no no no other no no yes 99000 yes no 0 0 yes 100000 30"
+            )
+            .unwrap(),
             "replace"
         );
         assert_eq!(
@@ -543,6 +577,35 @@ mod tests {
                 .unwrap(),
             "none"
         );
+        // 末尾 4 引数 <kind> <marker> <ci_green> <other_org> の新形式 (24 引数)
+        let rep = "lane worker absent no no no yes yes nothing no no no 0 no no 0 0 no 100000 30";
+        assert_eq!(extra(rep).unwrap(), "move settle-gone done");
+        assert_eq!(
+            extra(&format!("{rep} unset no no no")).unwrap(),
+            "move settle-gone done"
+        );
+        assert_eq!(
+            extra(&format!("{rep} implement no no no")).unwrap(),
+            "move pane-gone todo"
+        );
+        assert_eq!(
+            extra(&format!("{rep} implement yes no no")).unwrap(),
+            "move end-marker done"
+        );
+        assert_eq!(
+            extra("lane todo live no no no no no nothing no no no 0 no no 0 0 no 100000 30 implement no yes yes")
+                .unwrap(),
+            "move merge-wait human_action"
+        );
+        // 引数の数: 20 と 24 だけ
+        for n in [21, 22, 23, 25] {
+            let extra_args = ["implement", "no", "no", "no", "no"];
+            let s = format!("{base} {}", extra_args[..n - 20].join(" "));
+            assert!(extra(&s).is_none(), "{n} 引数は誤り");
+        }
+        // 新形式の語彙外
+        assert!(extra(&format!("{base} nokind no no no")).is_none());
+        assert!(extra(&format!("{base} implement maybe no no")).is_none());
         // 誤り: bool 語彙外、lane 語彙外、数値の桁あふれ、引数の数
         assert!(extra(&base.replace("live no", "live maybe")).is_none());
         assert!(extra(&base.replacen("todo", "nowhere", 1)).is_none());
