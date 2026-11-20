@@ -81,6 +81,11 @@ fn pane_json(
         // now の取得後に transcript を読むので、その間の入力で起点が now を越えうる。負にしない
         .map(|t| (now - t).max(0));
     // transcript が無い、または最初の時刻が取れない pane は帰属を判定できないので null (0 件と区別する)
+    // 届いていない入力 (キュー待ち) と、最後に届いた入力の時刻。first_ts が取れない pane は inbox と同じく null
+    let queue = track.as_ref().filter(|t| t.first_ts.is_some()).map(|t| {
+        let (pending, oldest_at) = t.queue.pending();
+        json!({"pending": pending, "oldest_at": oldest_at, "last_input_at": t.last_input_ts()})
+    });
     let inbox = track.and_then(|t| t.first_ts).map(|since| {
         let pane = Pane {
             pane: p.pane.clone(),
@@ -103,6 +108,7 @@ fn pane_json(
         "status": p.status,
         "working_secs": working_secs,
         "inbox": inbox,
+        "queue": queue,
         "hidden": p.hidden(),
         "hidden_reason": p.hidden().then_some(match p.kind {
             Some(PaneKind::Resident) => "resident",
