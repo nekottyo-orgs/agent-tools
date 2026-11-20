@@ -27,7 +27,7 @@ CI はこの環境を持たないので、`.github/workflows/inbox-core.yml` が
 
 ## 証明した範囲
 
-生成された `step` / `plan` についての定理は 15 本で、どれも `#print axioms` が `[propext, Classical.choice, Quot.sound]` だけを返す。`Handoff/Model.lean`、`Handoff/Post.lean` の model 側の定理と補題を含めた 34 本 (`regen.sh` の「定理の数」) のどれにも `sorry` は無い (`regen.sh` が判定する)。
+生成された `step` / `plan` についての定理は 15 本で、どれも `#print axioms` が `[propext, Classical.choice, Quot.sound]` だけを返す。`Handoff/Model.lean`、`Handoff/Post.lean` の model 側の定理と補題を含めた 38 本 (`regen.sh` の「定理の数」) のどれにも `sorry` は無い (`regen.sh` が判定する)。
 
 - `step_total`、`plan_total`: 生成された `step` と `plan` は失敗しない (`plan` の副作用は 3 個以下)
 - `step_refines`: `step` の判定は model の Step の遷移と一致する。タグが model にあるもの (`InModel`) に限る
