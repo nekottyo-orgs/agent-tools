@@ -210,11 +210,11 @@ pub fn plan(m: Msg, op: Op, o: Obs) -> Vec<Effect> {
     v
 }
 
-// ---- lane と停止 (agents の task-reconcile.sh / frontdesk-health.sh の判定、design.md の S3 / S7) ----
+// ---- lane と停止 (取り込み側の lane の照合、停止の検出、再送の段の判定) ----
 // 事実は外殻が inbox・送信記録・Cue・herdr から task ごとに組んで渡す。時刻はすべて epoch 秒で、外殻が現在時刻も渡す。
-// 事実の型には reconciler が書く欄 (lane と機械の欄) を入れない (監査 P1: 自分の書いた印が次の guard を外して往復した)。
+// 事実の型には reconciler が書く欄 (lane と機械の欄) を入れない (自分の書いた印が次の guard を外し、lane が往復したため)。
 // 現在の lane は next_lane の別の引数にする。今の連鎖は同じ観測でも lane ごとに動きが違い (human_decision からは todo へ
-// 移すが todo と worker では動かさない)、観測だけでは再現できないため (窓口の決定 O1)
+// 移すが todo と worker では動かさない)、観測だけでは再現できないため
 
 #[derive(Clone, Copy)]
 pub enum Lane {
@@ -267,7 +267,7 @@ pub struct TaskFacts {
     // 停止の最初の検出 (stall-detected.log) がある
     pub detected: bool,
     pub detected_at: u64,
-    // health-stalled-seen に今も載る
+    // 停止の検出が今も続いている
     pub seen: bool,
     // 検出の後に同じ依頼の報告か、催促でない送信がある
     pub cleared: bool,
@@ -356,7 +356,7 @@ pub fn next_lane(from: Lane, f: TaskFacts, now: u64, cap_min: u64) -> Option<Mov
     }
 }
 
-// frontdesk-health.sh の停止 (h)。起点は最後の報告と割り当て (task の作成) の新しい方
+// 停止の検出。起点は最後の報告と割り当て (task の作成) の新しい方
 #[derive(Clone, Copy)]
 pub struct StallFacts {
     // pane が 1 つ以上見つかり、全て done / idle
@@ -396,7 +396,7 @@ pub fn stalled(f: StallFacts, now: u64, min: u64) -> Stall {
     }
 }
 
-// 再送の段 (S7)。task-reconcile.sh の resend_step の引数と出力の段名をそのまま境界にする。
+// 再送の段。取り込み側の bash の resend_step が持っていた引数と出力の段名をそのまま境界にする。
 // どの 1 通を見るか、台帳の読み直しと 3 周の進め方、送る直前の入力欄の読み直しは外殻に残る
 #[derive(Clone, Copy)]
 pub enum Agent {

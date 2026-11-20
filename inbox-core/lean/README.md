@@ -51,7 +51,7 @@ CI はこの環境を持たないので、`.github/workflows/inbox-core.yml` が
 
 - 受信待ちの停止 (issue 41 の穴 2 の残り): `Fault.watchDie` の後は `armed` が落ち、次に届いた msg を watch は通知しない。直したのは fire の guard だけで、この経路は残る。言えるのは `post_watchDie_rearm` の「張り直しが 1 回走れば new/ を全て見せるか受信待ちを張り直す」までで、張り直しが走ることは A8 の仮定
 - token ファイルの掃除 (issue 41 の穴 1): `Step.sweep` は「消しうる」だけを表す。model に時間が無いので、実装の lease 期限 (24 時間) が過ぎれば必ず消える、とは言っていない。次の claim が来なければ、孤立したファイルは残り続ける
-- `lib.rs` の `next_lane` / `stalled` / `resend_step` (agents の task-reconcile.sh と frontdesk-health.sh の判定) は Lean に翻訳されて build に通るが、まだ定理が無い。適合の根拠は `../tests/` の全数の試験だけ
+- `lib.rs` の `next_lane` / `stalled` / `resend_step` (取り込み側の lane の照合、停止の検出、再送の段の判定) は Lean に翻訳されて build に通るが、まだ定理が無い。適合の根拠は `../tests/` の全数の試験だけ
 
 ## 証明の外
 
