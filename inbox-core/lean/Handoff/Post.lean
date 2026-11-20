@@ -335,4 +335,15 @@ theorem e5_needs_humanSurface : ¬ E5Prop { Config.post with humanSurface := fal
   have := (h _ r2 0 _ hx rfl).2 _ (Human.speak _)
   simp [c, Config.post] at this
 
+/-- 穴 2 の残り: watch が何も出さずに止まった (`Fault.watchDie`) 後は、次の msg を watch が通知しない。
+張り直しが 1 回走れば、new/ の msg を全て見せるか、受信待ちを張り直す。張り直しが走ることは運用の仮定 (README の A8) -/
+theorem post_watchDie_rearm (s : State) :
+    ∃ s', Rearm Config.post { s with armed := false } s' ∧
+      (s'.armed = true ∨ ∀ m x, s.msgs m = some x → x.box = .new → s'.shown m = true) := by
+  by_cases h : HasNew { s with armed := false }
+  · refine ⟨_, Rearm.reveal _ rfl h, Or.inr ?_⟩
+    intro m x hx hb
+    simp [newIds, hx, hb]
+  · exact ⟨_, Rearm.arm _ false (fun hc => h hc.2), Or.inl rfl⟩
+
 end Handoff

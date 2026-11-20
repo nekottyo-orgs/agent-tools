@@ -27,7 +27,7 @@ CI はこの環境を持たないので、`.github/workflows/inbox-core.yml` が
 
 ## 証明した範囲
 
-生成された `step` / `plan` についての定理は 15 本で、どれも `#print axioms` が `[propext, Classical.choice, Quot.sound]` だけを返す。`Handoff/Model.lean`、`Handoff/Post.lean` の model 側の定理と補題を含めた 38 本 (`regen.sh` の「定理の数」) のどれにも `sorry` は無い (`regen.sh` が判定する)。
+生成された `step` / `plan` についての定理は 15 本で、どれも `#print axioms` が `[propext, Classical.choice, Quot.sound]` だけを返す。`Handoff/Model.lean`、`Handoff/Post.lean` の model 側の定理と補題を含めた 39 本 (`regen.sh` の「定理の数」) のどれにも `sorry` は無い (`regen.sh` が判定する)。
 
 - `step_total`、`plan_total`: 生成された `step` と `plan` は失敗しない (`plan` の副作用は 3 個以下)
 - `step_refines`: `step` の判定は model の Step の遷移と一致する。タグが model にあるもの (`InModel`) に限る
@@ -44,7 +44,14 @@ CI はこの環境を持たないので、`.github/workflows/inbox-core.yml` が
 - A5: reply の送信が成功した (herdr-message / agent prompt が exit 0) ことと、送り元に届いたことを同じとみなす
 - A6: `--sender-gone` の確認は正しい。pane id が再利用されても誤認しない
 - A7: 修正後の張り直しは、new/ の残りを即時に全件出す (`e5_of` が依る遷移の定義)
+- A8: watch が止まった後、窓口の張り直し (`Rearm`) はいつか走る。機械では保証せず運用の仮定に置く (`post_watchDie_rearm` の前提)
 - G5: model の `Config.stage0` では E5 が成り立つが、移行期の現実はそれより弱い (移す前の repo の `skills/herdr-orchestrate/references/front-desk.md` の張り直しの節)
+
+## 残る限界
+
+- 受信待ちの停止 (issue 41 の穴 2 の残り): `Fault.watchDie` の後は `armed` が落ち、次に届いた msg を watch は通知しない。直したのは fire の guard だけで、この経路は残る。言えるのは `post_watchDie_rearm` の「張り直しが 1 回走れば new/ を全て見せるか受信待ちを張り直す」までで、張り直しが走ることは A8 の仮定
+- token ファイルの掃除 (issue 41 の穴 1): `Step.sweep` は「消しうる」だけを表す。model に時間が無いので、実装の lease 期限 (24 時間) が過ぎれば必ず消える、とは言っていない。次の claim が来なければ、孤立したファイルは残り続ける
+- `lib.rs` の `next_lane` / `stalled` / `resend_step` (取り込み側の lane の照合、停止の検出、再送の段の判定) は Lean に翻訳されて build に通るが、まだ定理が無い。適合の根拠は `../tests/` の全数の試験だけ
 
 ## 証明の外
 
