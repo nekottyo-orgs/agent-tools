@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.2.2](https://github.com/nekottyo/agent-tools/compare/inbox-core/v0.2.1...inbox-core/v0.2.2) - 2026-11-20
+
+### Changes
+- feat(inbox-core): 依頼の種類と終わりの印で done を決める判定を足す by @nekottyo in https://github.com/nekottyo/agent-tools/pull/52
+
 ## [v0.2.1](https://github.com/nekottyo/agent-tools/compare/inbox-core/v0.2.0...inbox-core/v0.2.1) - 2026-11-20
 
 ### Changes
