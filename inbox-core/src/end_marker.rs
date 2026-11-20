@@ -60,6 +60,19 @@ pub fn judge(
     if k.marker {
         return Verdict::EndMarker;
     }
+    // merge 待ちで human_action に入った後に判断待ちが付いたら human_decision へ戻す。human_action からは next_lane が動かさず、問いが人に出ないため。merge-wait で入る条件 (他 org の implement、CI 通過) に絞る。StallCap で入った worker の同じ穴は今回の範囲外
+    if k.kind == Kind::Implement
+        && k.other_org
+        && k.ci_green
+        && matches!(from, Lane::HumanAction)
+        && f.waiting
+        && matches!(f.panes, Panes::Live)
+    {
+        return Verdict::Move(Move {
+            rule: Rule::Waiting,
+            dest: Lane::HumanDecision,
+        });
+    }
     let before_human_action = matches!(from, Lane::Todo | Lane::Worker | Lane::HumanDecision);
     // 人の判断待ちか、回答を todo へ戻す途中の依頼は merge 待ちで human_action に固定しない。human_action からは next_lane が動かさず、判断の問いが埋もれるため
     // answered は decision_id が task に残り続けるので常に立ちうる。止めるのは回答を todo へ戻す human_decision からだけ
@@ -266,6 +279,52 @@ mod tests {
             assert_ne!(go(from, waiting, k), "merge-wait");
             assert_eq!(go(from, waiting, k), plain(from, waiting));
         }
+    }
+
+    #[test]
+    fn merge_wait_で_human_action_に入った後の判断待ちは_human_decision_へ戻る() {
+        let k = KindFacts {
+            ci_green: true,
+            other_org: true,
+            ..kf(Kind::Implement)
+        };
+        let waiting = TaskFacts {
+            waiting: true,
+            ..base()
+        };
+        assert_eq!(go(Lane::HumanAction, waiting, k), "move 4 2"); // Waiting -> HumanDecision
+                                                                   // 条件が欠ければ動かさない: pane が無い、他 org でない、CI が通っていない、implement でない
+        let gone = TaskFacts {
+            panes: Panes::Absent,
+            ..waiting
+        };
+        assert_eq!(go(Lane::HumanAction, gone, k), "stay");
+        for lacking in [
+            KindFacts {
+                other_org: false,
+                ..k
+            },
+            KindFacts {
+                ci_green: false,
+                ..k
+            },
+            KindFacts {
+                kind: Kind::Monitor,
+                ..k
+            },
+        ] {
+            assert_eq!(go(Lane::HumanAction, waiting, lacking), "stay");
+        }
+        // 判断待ちが続く間は human_decision に留まる
+        assert_eq!(go(Lane::HumanDecision, waiting, k), "stay");
+        // 回答後は todo へ戻り、todo から merge-wait で human_action に進む。waiting が止んだ後は human_action で動かない
+        let answered = TaskFacts {
+            answered: true,
+            ..base()
+        };
+        assert_eq!(go(Lane::HumanDecision, answered, k), "move 3 0"); // Answered -> Todo
+        assert_eq!(go(Lane::Todo, answered, k), "merge-wait");
+        assert_eq!(go(Lane::HumanAction, answered, k), "stay");
     }
 
     #[test]
