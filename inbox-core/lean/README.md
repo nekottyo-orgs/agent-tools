@@ -25,11 +25,11 @@ bash inbox-core/lean/regen.sh --update  # 生成物と lib.rs.sha256 を書き�
 
 Aeneas / Charon / Lean の nightly は `AENEAS_SPIKE` (既定 `$HOME/.local/share/aeneas-spike`) の隔離環境を使い、本番の cargo と mise の設定には触れない。Mathlib と Aeneas の Lean ライブラリはそこの取得済みのものを指す。環境が無ければ「未実行」と出して終わる。
 
-CI はこの環境を持たないので、`.github/workflows/inbox-core.yml` が `lib.rs` の sha256 を `lib.rs.sha256` と照合する。`lib.rs` を変えて証明を回し直していなければ、そこで落ちる。
+CI は `inbox-core/` などの対象変更で、固定した Linux 用ツールチェーンを用意し、`regen.sh` で Charon → Aeneas の再生成、生成物の照合、Lean の build、公理と sha256 の検査を行う。依存が無く実行できない場合も失敗する。
 
 ## 証明した範囲
 
-生成された `step` / `plan` についての定理は 15 本、`stalled` についての定理は U64 の演算の補題 4 本を含めて 8 本、`resend_step` / `next_lane` についての定理は補題を含めて 21 本で、どれも `#print axioms` が `propext` / `Classical.choice` / `Quot.sound` だけを返す (U64 の補題 4 本と `ite_ok`、`laneTrace_*`、`laneRank_le` は `[propext, Quot.sound]`、`laneSpec_terminal` は `[propext]`)。`Handoff/Model.lean`、`Handoff/Post.lean` の model 側の定理と補題を含めた 68 本 (`regen.sh` の「定理の数」) のどれにも `sorry` は無い (`regen.sh` が判定する)。
+生成された `step` / `plan` についての定理は 15 本、`stalled` についての定理は U64 の演算の補題 4 本を含めて 8 本、`resend_step` / `next_lane` についての定理は補題を含めて 23 本で、どれも `#print axioms` が `propext` / `Classical.choice` / `Quot.sound` だけを返す (U64 の補題 4 本と `ite_ok`、`laneTrace_*`、`laneRank_le` は `[propext, Quot.sound]`、`laneSpec_terminal` は `[propext]`)。`Handoff/Model.lean`、`Handoff/Post.lean` の model 側の定理と補題を含めた 70 本 (`regen.sh` の「定理の数」) のどれにも `sorry` は無い (`regen.sh` が判定する)。
 
 - `step_total`、`plan_total`: 生成された `step` と `plan` は失敗しない (`plan` の副作用は 3 個以下)
 - `step_refines`: `step` の判定は model の Step の遷移と一致する。タグが model にあるもの (`InModel`) に限る
@@ -62,6 +62,7 @@ CI はこの環境を持たないので、`.github/workflows/inbox-core.yml` が
 - `next_lane_refines`: 同じ前提で、生成された `next_lane` は失敗せず、`laneSpec` に `over_cap_eq` の値を渡した結果を返す
 - `laneSpec_terminal`、`next_lane_terminal`: done / human_action からは移さない。生成物の側は `over_cap` を計算しないので溢れの前提は要らない
 - `laneSpec_dest_ne`、`next_lane_dest_ne`: 移すなら行き先は元の lane と違う
+- `laneSpec_done_requires_report`、`next_lane_done_requires_report`: done に移るには `accepted` または `req_accepted` が真であることが必要。両方を落として呼び直す `end_marker::judge` の前提を確かめる。Rust の `tests/lane.rs` でも同じ性質を判定の全組で照合する
 - `laneSpec_converges`、`next_lane_converges`: 事実と oc (生成物の側は now と cap) を固定して繰り返すと、3 回以内に移さない lane に着き、通った lane に戻らない (`../tests/lane.rs` の全数の試験と同じ主張)。生成物の側の 1 歩は、`next_lane` が `ok (some m)` を返すときの `m.dest` で与える
 - `next_lane_step_exists`: 上の 1 歩を与える関係を満たす関数は在る (`next_lane_converges` の前提が空でない)
 - `laneSpec_rank_lt`、`laneRank_le`: 上の証明が使う、1 歩ごとに真に減る順位 `laneRank` (3 以下)。human_decision は判断待ちなら 0 でなければ 3、todo は pane が生きていれば 2 でなければ 1、worker はその逆、done / human_action は 0

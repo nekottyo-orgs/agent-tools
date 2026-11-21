@@ -53,6 +53,9 @@ fn next_lane_は往復せず収束する() {
                         let mut steps = 0;
                         while let Some(m) = next_lane(cur, f, now, cap) {
                             steps += 1;
+                            if matches!(m.dest, Lane::Done) {
+                                assert!(f.accepted || f.req_accepted, "報告なしで done に移った");
+                            }
                             cur = m.dest;
                             assert!(
                                 !seen[idx(cur)],

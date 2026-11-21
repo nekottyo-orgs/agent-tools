@@ -251,6 +251,14 @@ theorem laneSpec_converges (fr : inbox_core.Lane) (f : inbox_core.TaskFacts) (oc
     exact laneSpec_rank_lt l f oc r d' h1
   exact ⟨laneTrace_stops step _ hs 3 fr (laneRank_le f fr), laneTrace_nodup step _ hs 3 fr⟩
 
+/-- end_marker.rs が報告を落として呼び直したとき、next_lane の仕様は done を返さない。 -/
+theorem laneSpec_done_requires_report (fr : inbox_core.Lane) (f : inbox_core.TaskFacts) (oc : Bool)
+    (r : inbox_core.Rule) (h : laneSpec fr f oc = some (r, .Done)) :
+    f.accepted = true ∨ f.req_accepted = true := by
+  cases ha : f.accepted <;> cases hr : f.req_accepted <;> simp_all
+  simp [laneSpec, ha, hr] at h
+  split_ifs at h <;> simp_all
+
 /-! ## next_lane の性質 (生成物の上で) -/
 
 theorem next_lane_terminal (fr : inbox_core.Lane) (f : inbox_core.TaskFacts) (now cap : Std.U64)
@@ -265,6 +273,17 @@ theorem next_lane_dest_ne (fr : inbox_core.Lane) (f : inbox_core.TaskFacts) (now
   rw [next_lane_refines fr f now cap hov, Result.ok.injEq, Option.map_eq_some_iff] at h
   obtain ⟨⟨r, d⟩, h1, rfl⟩ := h
   exact laneSpec_dest_ne fr f _ r d h1
+
+theorem next_lane_done_requires_report (fr : inbox_core.Lane) (f : inbox_core.TaskFacts) (now cap : Std.U64)
+    (hov : f.detected = true → f.seen = true → f.cleared = false →
+      f.detected_at.val + cap.val * 60 ≤ U64.max)
+    (m : inbox_core.Move) (h : inbox_core.next_lane fr f now cap = ok (some m))
+    (hd : m.dest = .Done) : f.accepted = true ∨ f.req_accepted = true := by
+  rw [next_lane_refines fr f now cap hov, Result.ok.injEq, Option.map_eq_some_iff] at h
+  obtain ⟨⟨r, d⟩, h, rfl⟩ := h
+  change d = .Done at hd
+  subst d
+  exact laneSpec_done_requires_report fr f _ r h
 
 /-- Result は帰納型でなく match で ok を取り出せないので、生成物の 1 歩 step は next_lane との関係で与える -/
 theorem next_lane_converges (fr : inbox_core.Lane) (f : inbox_core.TaskFacts) (now cap : Std.U64)
@@ -323,3 +342,5 @@ end InboxProofs
 #print axioms InboxProofs.next_lane_dest_ne
 #print axioms InboxProofs.next_lane_converges
 #print axioms InboxProofs.next_lane_step_exists
+#print axioms InboxProofs.laneSpec_done_requires_report
+#print axioms InboxProofs.next_lane_done_requires_report

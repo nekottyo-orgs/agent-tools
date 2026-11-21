@@ -3,8 +3,7 @@
 # 安全設計 (why):
 #   - 作業はすべて mktemp -d の一時ディレクトリで行い、worktree に .lake / target / .llbc を作らない
 #   - nightly の toolchain は AENEAS_SPIKE の env.sh だけで使い、mise の rust symlink を触らない (前後で比べて変われば exit 1)
-#   - Aeneas / Lean が無い環境 (CI など) では「未実行」とだけ出して exit 0 で終わる。人の指示がある。
-#     shell-style の「依存欠落は exit 2」より優先する。未実行の出力には成功と読める語を入れない
+#   - 手元で依存が無ければ「未実行」で終わる。CI では依存を用意し、検査できなければ失敗させる
 #   - 生成物 (InboxCore/InboxCore.lean) と lib.rs.sha256 が commit 済みと食い違えば exit 1 にして、証明の古びを気づかせる
 # 使い方: bash regen.sh [--update]   (--update: 生成物と lib.rs.sha256 を上書きする)
 #   AENEAS_SPIKE: spike の場所 (既定 $HOME/.local/share/aeneas-spike)
@@ -30,14 +29,17 @@ LIB="$HERE/../src/lib.rs"
 SPIKE="${AENEAS_SPIKE:-$HOME/.local/share/aeneas-spike}"
 MISE_RUST="$HOME/.local/share/mise/installs/rust/1.98.0"
 
-if [ ! -f "$SPIKE/env.sh" ]; then
-  echo "未実行: $SPIKE/env.sh が無い (Aeneas の spike が無い)"
+missing_tool() {
+  echo "未実行: $1" >&2
+  if [ "${CI:-}" = true ]; then exit 1; fi
   exit 0
-fi
+}
+
+[ -f "$SPIKE/env.sh" ] || missing_tool "$SPIKE/env.sh が無い"
 # shellcheck source=/dev/null
 source "$SPIKE/env.sh"
 for c in charon aeneas lake; do
-  command -v "$c" >/dev/null 2>&1 || { echo "未実行: $c が無い"; exit 0; }
+  command -v "$c" >/dev/null 2>&1 || missing_tool "$c が無い"
 done
 
 sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
@@ -93,8 +95,11 @@ name = "InboxCore"
 globs = ["InboxCore.+"]
 EOF
 rc=0
+if [ "${CI:-}" = true ] && [ ! -d "$SPIKE/lean-inbox/.lake/packages/mathlib" ]; then
+  (cd "$TMP/proofs" && MATHLIB_NO_CACHE_ON_UPDATE=1 lake update && lake exe cache get)
+fi
 (cd "$TMP/proofs" && lake build) >"$TMP/build.log" 2>&1 || rc=$?
-tail -n 15 "$TMP/build.log"
+if [ "$rc" -eq 0 ]; then tail -n 15 "$TMP/build.log"; else cat "$TMP/build.log"; fi
 
 fail=0
 if [ "$rc" -eq 0 ]; then echo "判定 (a): lake build は exit 0"; else echo "判定 (a): lake build が exit $rc で失敗"; fail=1; fi
