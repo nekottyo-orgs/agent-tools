@@ -12,6 +12,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Mutex, OnceLock};
@@ -59,6 +60,7 @@ pub struct Env {
     pub herdr: Vec<String>,
     pub herdr_dir: PathBuf,
     pub projects: PathBuf,
+    pub codex_sessions: PathBuf,
     pub runs: Option<PathBuf>,
     pub own_sock: PathBuf,
     pub show_resident: bool,
@@ -86,6 +88,10 @@ impl Env {
             projects: var("HERDR_TIMELINE_PROJECTS")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join(".claude/projects")),
+            codex_sessions: var("CODEX_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".codex"))
+                .join("sessions"),
             runs: runs.or_else(|| var("HERDR_TIMELINE_RUNS_DIR").map(PathBuf::from)),
             own_sock,
             show_resident,
@@ -185,6 +191,7 @@ pub struct PaneRow {
     pub label: String,
     pub kind: Option<PaneKind>,
     pub sid: Option<String>,
+    pub codex: bool,
     pub tab_id: Option<String>,
     pub ws: (String, String),
     pub socket: String,
@@ -363,8 +370,15 @@ pub fn gather(env: &Env) -> Snapshot {
             } else {
                 format!("{name}/{pane}")
             };
+            let codex = p["agent"].as_str() == Some("codex");
             let sid = p
                 .get("agent_session")
+                .filter(|a| {
+                    !codex
+                        || (a["kind"].as_str() == Some("id")
+                            && a["agent"].as_str() == Some("codex")
+                            && a["source"].as_str() == Some("herdr:codex"))
+                })
                 .map(|a| s(a, "value"))
                 .filter(|v| !v.is_empty());
             let label = s(p, "label");
@@ -389,6 +403,7 @@ pub fn gather(env: &Env) -> Snapshot {
                 },
                 title: clean(&s(p, "terminal_title_stripped")),
                 sid,
+                codex,
                 // 別 session の tab は今の画面に無いので移動の対象にしない
                 tab_id: Some(s(p, "tab_id")).filter(|t| !t.is_empty() && !foreign),
                 ws: (name.clone(), s(p, "workspace_id")),
@@ -619,7 +634,7 @@ pub fn mine<'a>(msgs: &'a [InMsg], p: &core::Pane) -> Vec<&'a InMsg> {
 }
 
 /// projects 直下のディレクトリ。glob を使わず read_dir して session_id のファイル名を join する
-pub fn project_dirs(projects: &Path) -> Vec<PathBuf> {
+fn project_dirs(projects: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = fs::read_dir(projects)
         .into_iter()
         .flatten()
@@ -631,16 +646,144 @@ pub fn project_dirs(projects: &Path) -> Vec<PathBuf> {
     v
 }
 
-pub fn find_transcript(dirs: &[PathBuf], sid: Option<&str>) -> Option<PathBuf> {
-    let sid = sid.filter(|s| valid_sid(s))?;
-    dirs.iter()
-        .map(|d| d.join(format!("{sid}.jsonl")))
-        .find(|p| p.is_file())
+#[derive(Default)]
+pub struct TranscriptPaths {
+    projects: Vec<PathBuf>,
+    rollouts: HashMap<String, PathBuf>,
+}
+
+impl TranscriptPaths {
+    pub fn new(env: &Env, panes: &[PaneRow]) -> Self {
+        let wanted: HashSet<&str> = panes
+            .iter()
+            .filter(|p| p.codex)
+            .filter_map(|p| p.sid.as_deref().filter(|s| uuid(s)))
+            .collect();
+        Self {
+            projects: project_dirs(&env.projects),
+            rollouts: if wanted.is_empty() {
+                HashMap::new()
+            } else {
+                codex_rollouts(&env.codex_sessions, &wanted).unwrap_or_default()
+            },
+        }
+    }
+
+    pub fn find(&self, row: &PaneRow) -> Option<PathBuf> {
+        let sid = row.sid.as_deref().filter(|s| valid_sid(s))?;
+        if row.codex {
+            return self.rollouts.get(sid).cloned();
+        }
+        self.projects
+            .iter()
+            .map(|d| d.join(format!("{sid}.jsonl")))
+            .find(|p| p.is_file())
+    }
+}
+
+fn uuid(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_hexdigit(),
+        })
+}
+
+fn dated_dirs(path: &Path, len: usize) -> std::io::Result<Vec<PathBuf>> {
+    let mut dirs = Vec::new();
+    for entry in fs::read_dir(path)? {
+        let e = entry?;
+        let name = e.file_name();
+        if name
+            .to_str()
+            .is_some_and(|s| s.len() == len && s.bytes().all(|b| b.is_ascii_digit()))
+            && e.file_type()?.is_dir()
+        {
+            dirs.push(e.path());
+        }
+    }
+    Ok(dirs)
+}
+
+fn codex_rollouts(
+    sessions: &Path,
+    wanted: &HashSet<&str>,
+) -> std::io::Result<HashMap<String, PathBuf>> {
+    let mut days = vec![sessions.to_path_buf()];
+    for len in [4, 2, 2] {
+        let mut next = Vec::new();
+        for day in days {
+            next.extend(dated_dirs(&day, len)?);
+        }
+        days = next;
+    }
+    let mut candidates: HashMap<String, Option<PathBuf>> = HashMap::new();
+    // 読み飛ばしたディレクトリに同じ ID の候補があるかもしれない。
+    for day in days {
+        for entry in fs::read_dir(day)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(id) = name
+                .to_str()
+                .and_then(rollout_id)
+                .filter(|id| wanted.contains(id))
+            else {
+                continue;
+            };
+            if entry.file_type()?.is_file() {
+                candidates
+                    .entry(id.to_owned())
+                    .and_modify(|p| *p = None)
+                    .or_insert_with(|| Some(entry.path()));
+            }
+        }
+    }
+    Ok(candidates
+        .into_iter()
+        .filter_map(|(id, path)| {
+            let path = path?;
+            open_transcript(&path, Some(&id))?;
+            Some((id, path))
+        })
+        .collect())
+}
+
+fn rollout_id(name: &str) -> Option<&str> {
+    let name = name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
+    name.get(name.len().checked_sub(37)?..)?
+        .strip_prefix('-')
+        .filter(|id| uuid(id))
+}
+
+fn open_transcript(path: &Path, codex_id: Option<&str>) -> Option<fs::File> {
+    let Some(id) = codex_id else {
+        return fs::File::open(path).ok();
+    };
+    let mut f = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    if !f.metadata().ok()?.is_file() {
+        return None;
+    }
+    // session_meta に base instructions が入るため、通常の行より広い上限で先頭 1 行だけ読む。
+    let mut header = String::new();
+    BufReader::new((&mut f).take(2 * 1024 * 1024))
+        .read_line(&mut header)
+        .ok()?;
+    let meta: Value = serde_json::from_str(&header).ok()?;
+    if meta["type"].as_str() != Some("session_meta") || meta["payload"]["id"].as_str() != Some(id) {
+        return None;
+    }
+    // 同じ FD で本文を読むので、パスが入れ替わっても別セッションを表示しない。
+    f.rewind().ok()?;
+    Some(f)
 }
 
 /// 経過の起点に使う transcript の最終書き込み。中身は読まない
-pub fn transcript_mtime(dirs: &[PathBuf], sid: Option<&str>) -> Option<i64> {
-    mtime(&find_transcript(dirs, sid)?)
+pub fn transcript_mtime(paths: &TranscriptPaths, row: &PaneRow) -> Option<i64> {
+    mtime(&paths.find(row)?)
 }
 
 #[derive(Clone, Default)]
@@ -691,6 +834,55 @@ pub fn parse_lines(bytes: &[u8]) -> Vec<Line> {
                 .unwrap_or_default()
         })
         .collect()
+}
+
+fn codex_line(raw: &str, id: &str, is_header: bool) -> Line {
+    if !is_header && !raw.contains("\"UserMessage\"") {
+        return Line::default();
+    }
+    let Ok(v) = serde_json::from_str::<Value>(raw) else {
+        return Line::default();
+    };
+    let ts = v["timestamp"].as_str().and_then(parse_time);
+    if is_header && v["type"].as_str() == Some("session_meta") {
+        return Line {
+            ts,
+            ..Line::default()
+        };
+    }
+    let payload = &v["payload"];
+    let item = &payload["item"];
+    if v["type"].as_str() != Some("event_msg")
+        || payload["type"].as_str() != Some("item_completed")
+        || payload["thread_id"].as_str() != Some(id)
+        || item["type"].as_str() != Some("UserMessage")
+    {
+        return Line::default();
+    }
+    let content = arr(item, "content")
+        .iter()
+        .filter(|val| val["type"].as_str() == Some("text"))
+        .filter_map(|val| val["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Line {
+        ts,
+        typ: "user".into(),
+        content: Some(content).filter(|s| !s.is_empty()),
+        ..Line::default()
+    }
+}
+
+fn transcript_lines(bytes: &[u8], codex_id: Option<&str>, beginning: bool) -> Vec<Line> {
+    if let Some(id) = codex_id {
+        String::from_utf8_lossy(bytes)
+            .split('\n')
+            .enumerate()
+            .map(|(i, line)| codex_line(line, id, beginning && i == 0))
+            .collect()
+    } else {
+        parse_lines(bytes)
+    }
 }
 
 /// 指示 (classify が指示か貼り付け) なら (時刻, 含む brief のパス)
@@ -851,14 +1043,25 @@ pub struct Transcripts {
 
 impl Transcripts {
     /// 読めない transcript はイベント 0 件。失敗はキャッシュしない (権限を直したら次の周期で読む)
-    pub fn get(&mut self, path: &Path) -> Parsed {
+    pub fn get(&mut self, path: &Path, codex: bool) -> Parsed {
         let key = fs::metadata(path)
             .ok()
             .and_then(|m| Some((path.to_path_buf(), m.modified().ok()?, m.len())));
         if key.is_some() && key == self.key {
             return self.val.clone();
         }
-        let lines = fs::read(path).ok().map(|b| parse_lines(&b));
+        let lines = (|| {
+            let codex_id = if codex {
+                Some(rollout_id(path.file_name()?.to_str()?)?)
+            } else {
+                None
+            };
+            let mut bytes = Vec::new();
+            open_transcript(path, codex_id)?
+                .read_to_end(&mut bytes)
+                .ok()?;
+            Some(transcript_lines(&bytes, codex_id, true))
+        })();
         let events = transcript_events(lines.as_deref());
         let Some(lines) = lines else {
             return Parsed::default();
@@ -914,13 +1117,18 @@ pub struct Briefs {
 
 impl Briefs {
     /// 読めなければ状態を変えず None (ゴール無しで続ける)
-    pub fn scan(&mut self, path: &Path) -> Option<BriefTracker> {
-        let size = fs::metadata(path).ok()?.len();
+    pub fn scan(&mut self, path: &Path, codex: bool) -> Option<BriefTracker> {
+        let codex_id = if codex {
+            Some(rollout_id(path.file_name()?.to_str()?)?)
+        } else {
+            None
+        };
+        let mut f = open_transcript(path, codex_id)?;
+        let size = f.metadata().ok()?.len();
         let mut t = self.tracks.get(path).cloned().unwrap_or_default();
         if size < t.offset {
             t = BriefTracker::default(); // 縮んだら別物とみなして最初から読む
         }
-        let mut f = fs::File::open(path).ok()?;
         f.seek(SeekFrom::Start(t.offset)).ok()?;
         let mut buf = Vec::new();
         f.read_to_end(&mut buf).ok()?;
@@ -929,8 +1137,11 @@ impl Briefs {
         let end = buf.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
         let text = String::from_utf8_lossy(&buf[..end]);
         // parse_lines は split('\n') と同じ行数・同じ並びで返すので zip できる。queue は順序どおりに畳む
-        for (raw, l) in text.split('\n').zip(parse_lines(&buf[..end])) {
-            if raw.contains("\"type\":\"queue-operation\"") {
+        for (raw, l) in text
+            .split('\n')
+            .zip(transcript_lines(&buf[..end], codex_id, t.offset == 0))
+        {
+            if !codex && raw.contains("\"type\":\"queue-operation\"") {
                 if let Ok(v) = serde_json::from_str::<Value>(raw) {
                     let ts = v
                         .get("timestamp")
@@ -942,7 +1153,7 @@ impl Briefs {
                         t.queue.apply(ts, &v);
                     }
                 }
-            } else if raw.contains("\"queued_command\"") {
+            } else if !codex && raw.contains("\"queued_command\"") {
                 if let Ok(v) = serde_json::from_str::<Value>(raw) {
                     let a = v.get("attachment");
                     if a.and_then(|a| a.get("type")).and_then(Value::as_str)
@@ -1011,14 +1222,19 @@ impl Briefs {
     }
 
     /// working の経過の起点。transcript の最後の turn の時刻。読めない、または turn が無いときは None
-    pub fn turn_start(&mut self, row: &PaneRow, dirs: &[PathBuf]) -> Option<i64> {
-        let p = find_transcript(dirs, row.sid.as_deref())?;
-        self.scan(&p)?.last_turn_ts
+    pub fn turn_start(&mut self, row: &PaneRow, paths: &TranscriptPaths) -> Option<i64> {
+        let p = paths.find(row)?;
+        self.scan(&p, row.codex)?.last_turn_ts
     }
 
     /// pane 行のゴール。progress は read_msgs(.., true) で読んだ msg
-    pub fn pane_goal(&mut self, row: &PaneRow, dirs: &[PathBuf], progress: &[InMsg]) -> Goal {
-        let Some(t) = find_transcript(dirs, row.sid.as_deref()).and_then(|p| self.scan(&p)) else {
+    pub fn pane_goal(
+        &mut self,
+        row: &PaneRow,
+        paths: &TranscriptPaths,
+        progress: &[InMsg],
+    ) -> Goal {
+        let Some(t) = paths.find(row).and_then(|p| self.scan(&p, row.codex)) else {
             return Goal::default();
         };
         let (Some(brief), Some(since)) = (t.last_brief, t.last_brief_ts) else {
@@ -1046,12 +1262,12 @@ pub fn detail(
     row: &PaneRow,
     cache: &mut Transcripts,
     briefs: &mut Briefs,
-    dirs: &[PathBuf],
+    paths: &TranscriptPaths,
 ) -> Detail {
-    let Some(path) = find_transcript(dirs, row.sid.as_deref()) else {
+    let Some(path) = paths.find(row) else {
         return Detail::default();
     };
-    let parsed = cache.get(&path);
+    let parsed = cache.get(&path, row.codex);
     let p = core::Pane {
         pane: row.pane.clone(),
         socket: row.socket.clone(),
@@ -1163,11 +1379,11 @@ mod tests {
         let f = d.join("s.jsonl");
         fs::write(&f, format!("{T}\n")).unwrap();
         let mut c = Transcripts::default();
-        assert_eq!(c.get(&f).events.len(), 1, "1 件読めるはず");
-        assert_eq!(c.get(&f).events.len(), 1, "2 回目も同じ結果のはず");
+        assert_eq!(c.get(&f, false).events.len(), 1, "1 件読めるはず");
+        assert_eq!(c.get(&f, false).events.len(), 1, "2 回目も同じ結果のはず");
         assert_eq!(c.parses, 1, "同じ mtime と size なら解析し直さないはず");
         fs::write(&f, format!("{T}\n{T}\n")).unwrap();
-        assert_eq!(c.get(&f).events.len(), 2, "書き換えた内容を読むはず");
+        assert_eq!(c.get(&f, false).events.len(), 2, "書き換えた内容を読むはず");
         assert_eq!(c.parses, 2, "書き換えたら解析し直すはず");
         let _ = fs::remove_dir_all(&d);
     }
@@ -1242,7 +1458,7 @@ mod tests {
         let d = tmp("req1");
         let mut c = Transcripts::default();
         assert!(
-            c.get(&d.join("missing.jsonl")).events.is_empty(),
+            c.get(&d.join("missing.jsonl"), false).events.is_empty(),
             "存在しない transcript は 0 件のはず"
         );
         let f = d.join("locked.jsonl");
@@ -1252,7 +1468,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&f, fs::Permissions::from_mode(0o000)).unwrap();
             assert!(
-                c.get(&f).events.is_empty(),
+                c.get(&f, false).events.is_empty(),
                 "権限の無い transcript は 0 件のはず"
             );
             fs::set_permissions(&f, fs::Permissions::from_mode(0o600)).unwrap();
@@ -1289,7 +1505,7 @@ mod tests {
         let mut b = Briefs::default();
         let t0 = parse_time("2026-01-02T03:00:00Z");
         assert_eq!(
-            b.scan(&f).unwrap().last_turn_ts,
+            b.scan(&f, false).unwrap().last_turn_ts,
             t0,
             "人の指示だけが turn のはず"
         );
@@ -1302,7 +1518,7 @@ mod tests {
             .write_all(l.as_bytes())
             .unwrap();
         assert_eq!(
-            b.scan(&f).unwrap().last_turn_ts,
+            b.scan(&f, false).unwrap().last_turn_ts,
             parse_time("2026-01-02T03:20:00Z"),
             "「続けて」は新しい turn のはず"
         );
@@ -1320,7 +1536,7 @@ mod tests {
             .write_all(l.as_bytes())
             .unwrap();
         assert_eq!(
-            b.scan(&f).unwrap().last_turn_ts,
+            b.scan(&f, false).unwrap().last_turn_ts,
             t1,
             "スラッシュコマンドは新しい turn のはず"
         );
@@ -1336,7 +1552,7 @@ mod tests {
             .write_all(l.as_bytes())
             .unwrap();
         assert_eq!(
-            b.scan(&f).unwrap().last_turn_ts,
+            b.scan(&f, false).unwrap().last_turn_ts,
             t1,
             "task-notification は turn の起点にならないはず"
         );
@@ -1353,7 +1569,7 @@ mod tests {
             .write_all(l.as_bytes())
             .unwrap();
         assert_eq!(
-            b.scan(&f).unwrap().last_turn_ts,
+            b.scan(&f, false).unwrap().last_turn_ts,
             t1,
             "ローカルコマンドは turn の起点にならないはず"
         );
@@ -1427,13 +1643,13 @@ mod tests {
             let mut o = fs::OpenOptions::new();
             o.create(true).append(true);
             o.open(&f).unwrap().write_all(chunk.as_bytes()).unwrap();
-            let tr = b.scan(&f).unwrap();
+            let tr = b.scan(&f, false).unwrap();
             assert_eq!(tr.queue.pending(), (pending, oldest), "{n} 行目まで");
             assert_eq!(tr.last_input_ts(), last, "{n} 行目まで");
         }
         // 1 回で全部読んでも、途中まで読んでから続きを読んでも同じ状態になる
-        let once = Briefs::default().scan(&f).unwrap();
-        let last = b.scan(&f).unwrap();
+        let once = Briefs::default().scan(&f, false).unwrap();
+        let last = b.scan(&f, false).unwrap();
         assert_eq!(once.queue.pending(), last.queue.pending());
         assert_eq!(once.last_input_ts(), last.last_input_ts());
         let _ = fs::remove_dir_all(&d);
@@ -1453,7 +1669,7 @@ mod tests {
     }
 
     fn pending_of(f: &Path) -> (usize, Option<i64>) {
-        Briefs::default().scan(f).unwrap().queue.pending()
+        Briefs::default().scan(f, false).unwrap().queue.pending()
     }
 
     #[test]
@@ -1606,7 +1822,7 @@ mod tests {
             "attachment で届いたのに pending のまま"
         );
         // 届いた時刻には触れない
-        let tr = Briefs::default().scan(&f).unwrap();
+        let tr = Briefs::default().scan(&f, false).unwrap();
         assert_eq!(
             tr.queue.delivered_ts, None,
             "delivered_ts は user 行側が持つはず"
@@ -1635,10 +1851,10 @@ mod tests {
                 .write_all(script[done..n].concat().as_bytes())
                 .unwrap();
             done = n;
-            b.scan(&f).unwrap();
+            b.scan(&f, false).unwrap();
         }
-        let split = b.scan(&f).unwrap();
-        let once = Briefs::default().scan(&f).unwrap();
+        let split = b.scan(&f, false).unwrap();
+        let once = Briefs::default().scan(&f, false).unwrap();
         assert_eq!(
             split.queue.pending(),
             once.queue.pending(),
@@ -1666,12 +1882,12 @@ mod tests {
         s += &qline("enqueue", "2026-01-02T03:01:00Z", "直して", "");
         fs::write(&f, &s).unwrap();
         let mut b = Briefs::default();
-        let tr = b.scan(&f).unwrap();
+        let tr = b.scan(&f, false).unwrap();
         assert_eq!(tr.queue.pending(), (1, parse_time("2026-01-02T03:01:00Z")));
         assert_eq!(tr.last_input_ts(), None);
         // 縮んだら別物として最初から読む
         fs::write(&f, qline("enqueue", "2026-01-02T04:00:00Z", "別の指示", "")).unwrap();
-        let tr = b.scan(&f).unwrap();
+        let tr = b.scan(&f, false).unwrap();
         assert_eq!(tr.queue.pending(), (1, parse_time("2026-01-02T04:00:00Z")));
         let _ = fs::remove_dir_all(&d);
     }
@@ -1692,7 +1908,7 @@ mod tests {
         );
         fs::write(&f, &l1).unwrap();
         let mut b = Briefs::default();
-        let t = b.scan(&f).expect("読めるはず");
+        let t = b.scan(&f, false).expect("読めるはず");
         assert_eq!(b.read_bytes, l1.len() as u64, "1 回目は全体を読むはず");
         assert!(
             t.last_brief
@@ -1707,7 +1923,7 @@ mod tests {
             .unwrap()
             .write_all(half.as_bytes())
             .unwrap();
-        let t = b.scan(&f).expect("読めるはず");
+        let t = b.scan(&f, false).expect("読めるはず");
         assert!(
             t.last_brief
                 .as_deref()
@@ -1725,7 +1941,7 @@ mod tests {
             .unwrap()
             .write_all(&l2.as_bytes()[10..])
             .unwrap();
-        let t = b.scan(&f).expect("読めるはず");
+        let t = b.scan(&f, false).expect("読めるはず");
         assert_eq!(
             b.read_bytes,
             (l1.len() + half.len() + l2.len()) as u64,
@@ -1746,7 +1962,7 @@ mod tests {
             "最初の時刻と brief の時刻を持つはず"
         );
         fs::write(&f, &l1).unwrap();
-        let t = b.scan(&f).expect("読めるはず");
+        let t = b.scan(&f, false).expect("読めるはず");
         assert!(
             t.last_brief
                 .as_deref()
@@ -1754,7 +1970,7 @@ mod tests {
             "縮んだら最初から読み直すはず"
         );
         assert!(
-            b.scan(&d.join("missing.jsonl")).is_none(),
+            b.scan(&d.join("missing.jsonl"), false).is_none(),
             "読めなければ None のはず"
         );
         let _ = fs::remove_dir_all(&d);
@@ -1798,11 +2014,15 @@ mod tests {
             label: String::new(),
             kind: None,
             sid: Some("sess1".into()),
+            codex: false,
             tab_id: None,
             ws: (String::new(), String::new()),
             socket: "/s/a".into(),
         };
-        let dirs = [d.clone()];
+        let dirs = TranscriptPaths {
+            projects: vec![d.clone()],
+            ..Default::default()
+        };
         let reports = |body: &str| {
             fs::write(d.join("sess1.jsonl"), body).unwrap();
             let det = detail(

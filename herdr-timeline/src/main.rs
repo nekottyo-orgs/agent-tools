@@ -21,8 +21,8 @@ mod view;
 mod watchers;
 
 use data::{
-    canon, detail, gather, project_dirs, read_msgs, run_herdr, summary, transcript_mtime, Briefs,
-    Detail, Env, PaneRow, Snapshot, Transcripts,
+    canon, detail, gather, read_msgs, run_herdr, summary, transcript_mtime, Briefs, Detail, Env,
+    PaneRow, Snapshot, TranscriptPaths, Transcripts,
 };
 use std::collections::HashMap;
 use std::io::Write;
@@ -54,7 +54,7 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
   -h, --help         この説明を出す
 
 読み取り範囲:
-  herdr の pane / tab / workspace の一覧、Claude Code の transcript (全 pane は追記ぶんだけ、Timeline は選択した pane の全体)、
+  herdr の pane / tab / workspace の一覧、Claude Code / Codex の transcript (全 pane は追記ぶんだけ、Timeline は選択した pane の全体)、
   run の run.md と inbox の new・cur の *.msg、brief を読む。書き込まない
   (Enter の herdr tab focus を除く)。サーバを立てない。外部入力の制御文字は落としてから表示する
 
@@ -196,7 +196,7 @@ impl Seen {
         &mut self,
         snap: &Snapshot,
         now: i64,
-        dirs: &[PathBuf],
+        dirs: &TranscriptPaths,
         briefs: &mut Briefs,
     ) -> Vec<Row> {
         let progress = read_msgs(&snap.files, true);
@@ -225,7 +225,7 @@ impl Seen {
                     since: if working {
                         Some(turn.unwrap_or(e.1))
                     } else if p.status == "blocked" {
-                        transcript_mtime(dirs, p.sid.as_deref())
+                        transcript_mtime(dirs, p)
                     } else {
                         None // 畳んだ行は経過を出さないので stat もしない
                     },
@@ -265,7 +265,7 @@ fn print_timeline(env: &Env, pane: &str, width: usize, color: bool) -> i32 {
         row,
         &mut Transcripts::default(),
         &mut Briefs::default(),
-        &project_dirs(&env.projects),
+        &TranscriptPaths::new(env, &snap.panes),
     );
     if d.events.is_empty() {
         let why = if d.has_transcript {
@@ -378,7 +378,7 @@ fn expanded(
     key: &Option<String>,
     cache: &mut Transcripts,
     briefs: &mut Briefs,
-    dirs: &[PathBuf],
+    dirs: &TranscriptPaths,
 ) -> Option<(String, Detail)> {
     let k = key.as_ref()?;
     let p = snap.panes.iter().find(|p| &p.key == k)?;
@@ -452,7 +452,7 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
     while !STOP.load(Ordering::SeqCst) {
         // キー操作では取り直さず、保存した結果で配置だけやり直す
         let snap = gather(env);
-        let dirs = project_dirs(&env.projects);
+        let dirs = TranscriptPaths::new(env, &snap.panes);
         let rows = seen.rows(&snap, now(), &dirs, &mut briefs);
         if let Some(c) = caller.take() {
             sel = initial_select(&c, &snap.panes, &rows, &env.own_sock.to_string_lossy()).or(sel);
@@ -612,7 +612,7 @@ fn main() {
     }
     let snap = gather(&env);
     let t = now();
-    let dirs = project_dirs(&env.projects);
+    let dirs = TranscriptPaths::new(&env, &snap.panes);
     if o.json {
         println!(
             "{}",
@@ -652,6 +652,7 @@ mod tests {
             label: String::new(),
             kind: None,
             sid: None,
+            codex: false,
             tab_id: None,
             ws: (String::new(), String::new()),
             socket: socket.into(),

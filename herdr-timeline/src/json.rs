@@ -3,12 +3,12 @@
 
 use crate::core::Pane;
 use crate::data::{
-    find_transcript, mine, read_msgs, run_herdr, Briefs, Env, InMsg, PaneKind, PaneRow, Snapshot,
+    mine, read_msgs, run_herdr, Briefs, Env, InMsg, PaneKind, PaneRow, Snapshot, TranscriptPaths,
 };
 use crate::text::clean;
 use crate::watchers;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// 画面の末尾に出ていたら anomaly とみなす文字列。足すときはここに 1 行足す (部分一致、先頭側が優先)
 const ANOMALY_PATTERNS: &[&str] = &["Reconnect failed"];
@@ -40,7 +40,7 @@ pub fn document(
     env: &Env,
     snap: &Snapshot,
     now: i64,
-    dirs: &[PathBuf],
+    dirs: &TranscriptPaths,
     briefs: &mut Briefs,
 ) -> Value {
     let msgs = read_msgs(&snap.files, false);
@@ -67,12 +67,12 @@ fn pane_json(
     p: &PaneRow,
     msgs: &[InMsg],
     now: i64,
-    dirs: &[PathBuf],
+    dirs: &TranscriptPaths,
     briefs: &mut Briefs,
     anomaly: Option<&str>,
 ) -> Value {
     let label = clean(&p.label);
-    let track = find_transcript(dirs, p.sid.as_deref()).and_then(|t| briefs.scan(&t));
+    let track = dirs.find(p).and_then(|t| briefs.scan(&t, p.codex));
     // 経過の起点が transcript から取れたときだけ。観測起点しか無い (approx) ときは null
     let working_secs = track
         .as_ref()
@@ -82,10 +82,13 @@ fn pane_json(
         .map(|t| (now - t).max(0));
     // transcript が無い、または最初の時刻が取れない pane は帰属を判定できないので null (0 件と区別する)
     // 届いていない入力 (キュー待ち) と、最後に届いた入力の時刻。first_ts が取れない pane は inbox と同じく null
-    let queue = track.as_ref().filter(|t| t.first_ts.is_some()).map(|t| {
-        let (pending, oldest_at) = t.queue.pending();
-        json!({"pending": pending, "oldest_at": oldest_at, "last_input_at": t.last_input_ts()})
-    });
+    let queue = track
+        .as_ref()
+        .filter(|t| !p.codex && t.first_ts.is_some())
+        .map(|t| {
+            let (pending, oldest_at) = t.queue.pending();
+            json!({"pending": pending, "oldest_at": oldest_at, "last_input_at": t.last_input_ts()})
+        });
     let inbox = track.and_then(|t| t.first_ts).map(|since| {
         let pane = Pane {
             pane: p.pane.clone(),
@@ -151,6 +154,7 @@ mod tests {
                 label: String::new(),
                 kind: None,
                 sid: None,
+                codex: false,
                 tab_id: None,
                 ws: (String::new(), String::new()),
                 socket: String::new(),
