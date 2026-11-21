@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.1.4](https://github.com/nekottyo/agent-tools/compare/herdr-timeline/v0.1.3...herdr-timeline/v0.1.4) - 2026-11-21
+
+### Changes
+- feat(herdr-timeline): Codex のセッション履歴を表示する by @nekottyo in https://github.com/nekottyo/agent-tools/pull/60
+
 ## [v0.1.3](https://github.com/nekottyo/agent-tools/compare/herdr-timeline/v0.1.2...herdr-timeline/v0.1.3) - 2026-11-21
 
 ### Changes
