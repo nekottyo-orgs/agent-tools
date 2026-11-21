@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.1.3](https://github.com/nekottyo/agent-tools/compare/herdr-timeline/v0.1.2...herdr-timeline/v0.1.3) - 2026-11-21
+
+### Changes
+- 未処理の報告に窓口の状態を表示する by @nekottyo in https://github.com/nekottyo/agent-tools/pull/55
+- test: 形式検証を先に更新し CI で証明を確認する by @nekottyo in https://github.com/nekottyo/agent-tools/pull/57
+
 ## [v0.1.2](https://github.com/nekottyo/agent-tools/compare/herdr-timeline/v0.1.1...herdr-timeline/v0.1.2) - 2026-11-20
 
 ### Changes
