@@ -134,6 +134,7 @@ impl Fx {
             .env("HERDR_TIMELINE_HERDR_DIR", self.path("herdr"))
             .env("HERDR_SOCKET_PATH", self.sock())
             .env("HERDR_TIMELINE_PROJECTS", self.path("projects"))
+            .env("CODEX_HOME", self.path("codex"))
             .envs(runs.then(|| ("HERDR_TIMELINE_RUNS_DIR", self.path("runs"))))
             .env("NO_COLOR", "1")
             .env_remove("FORCE_COLOR")
@@ -1620,4 +1621,80 @@ fn watchers_last_activity_sees_one_level_below_subdirs() {
     set("st/turns/advance-notice", 1);
     // 2 階層より下 (deeper/y.json) は見ない。1 段下の x.json の mtime が出る
     assert_eq!(watchers_of(&fx, &env)[0]["last_activity"], 3_000_000);
+}
+
+#[test]
+fn codex_timeline_uses_only_the_reported_session_and_its_user_items() {
+    let fx = Fx::new("codex-timeline");
+    let mut panes: serde_json::Value =
+        serde_json::from_slice(&fs::read(fx.path("herdr/panes.json")).unwrap()).unwrap();
+    let row = &mut panes["result"]["panes"][1];
+    row["agent"] = json!("codex");
+    let session = json!({"kind": "id", "agent": "codex", "source": "herdr:codex", "value": SID2});
+    row["agent_session"] = session.clone();
+    fx.write("herdr/panes.json", &panes.to_string());
+    fx.transcript(SID2, &[user("2026-11-21T06:00:01Z", "WRONG_CLAUDE")]);
+    let rollout =
+        json!({"timestamp":"2026-11-21T06:00:00Z", "type":"session_meta", "payload":{"id":SID2}});
+    let instruction = |id: &str, text: &str| {
+        json!({
+        "timestamp":"2026-11-21T06:00:01Z", "type":"event_msg", "payload":{
+            "type":"item_completed", "thread_id":id, "item":{
+                "type":"UserMessage","content":[{"type":"text","text":text}]}}})
+    };
+    let user_replica = json!({"timestamp":"2026-11-21T06:00:01Z", "type":"response_item", "payload":{
+        "type":"message", "role":"user", "content":[{"type":"input_text","text":"WRONG_MODEL_COPY"}]}});
+    let good = format!(
+        "{rollout}\n{}\n{}\n{user_replica}\n",
+        instruction(SID2, "CODEX_INSTRUCTION"),
+        instruction(SID1, "WRONG_THREAD"),
+    );
+    let file = format!("codex/sessions/2026/11/21/rollout-2026-11-21T06-00-00-{SID2}.jsonl");
+    fx.write(&file, &good);
+    fx.msg(
+        "runs/r1/inbox/new/1-1795240802000000-info-wA:p2-1.msg",
+        "wA:p2",
+        Some(&fx.sock()),
+        "info",
+        "2026-11-21T06:00:02Z",
+        "CODEX_REPORT",
+    );
+
+    let read =
+        || String::from_utf8(fx.run(&["--timeline", "wA:p2", "--width", "150"]).stdout).unwrap();
+    let out = read();
+    assert_eq!(out.matches("CODEX_INSTRUCTION").count(), 1, "{out}");
+    assert!(
+        out.contains("CODEX_REPORT") && !out.contains("WRONG_"),
+        "{out}"
+    );
+    let out = fx.run(&["--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let p = doc["panes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["pane_id"] == "wA:p2")
+        .unwrap();
+    assert!(p["working_secs"].is_number());
+    assert!(p["queue"].is_null(), "Codex のキュー件数は未観測");
+    assert_eq!(p["inbox"]["count"], 1);
+
+    panes["result"]["panes"][1]["agent_session"] = json!(null);
+    fx.write("herdr/panes.json", &panes.to_string());
+    assert!(read().contains("transcript が見つからない"));
+    panes["result"]["panes"][1]["agent_session"] = session.clone();
+    panes["result"]["panes"][1]["agent_session"]["source"] = json!("other");
+    fx.write("herdr/panes.json", &panes.to_string());
+    assert!(read().contains("transcript が見つからない"));
+    panes["result"]["panes"][1]["agent_session"] = session;
+    fx.write("herdr/panes.json", &panes.to_string());
+    fx.write(&file, &good.replacen(SID2, SID1, 1));
+    assert!(read().contains("transcript が見つからない"));
+    fx.write(&file, &good);
+    fx.write(
+        &format!("codex/sessions/2026/11/22/rollout-2026-11-22T06-00-00-{SID2}.jsonl"),
+        &good,
+    );
+    assert!(read().contains("transcript が見つからない"));
 }

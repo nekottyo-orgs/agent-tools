@@ -14,11 +14,14 @@ herdr (端末の multiplexer) の pane を「要対応 / 作業中 / done・idle
 - 読むもの
   - herdr の `pane list` / `tab list` / `workspace list` (session ごと)
   - Claude Code の transcript (`<projects>/<dir>/<session_id>.jsonl`)。全 pane の transcript は、ゴールを出すために前回読んだ位置から追記ぶんだけを読む (brief のパスと、最初と最後の入力の時刻だけを拾う。queue-operation (enqueue / dequeue / remove / popAll) も読み、キュー待ちの入力の件数と時刻を数える)。Timeline は選んだ pane と `--timeline` の pane だけ、全体を読む。session_id は英数字と `. _ -` だけ、先頭が `.` でないものしか使わない
+  - Codex の rollout (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-…-<UUID>.jsonl`、`CODEX_HOME` の既定は `~/.codex`)。Herdr の Codex 統合が現在の pane に報告した ID と、ファイル名・先頭の `session_meta.payload.id` が一致し、候補が 1 件のときに読む。Codex 0.171.0 の完了済み `UserMessage` を指示・経過・brief の起点に使う。履歴の ID が未報告なら「transcript が見つからない」と表示する
   - run の `run.md` と `inbox/new`・`inbox/cur` の `*.msg` (それ以外のディレクトリは見ない)。pane 行の進捗には、名前 (`<prio>-<micros>-<tag>-<from>-<rand>.msg`) の tag が `progress` のものだけを開く。Timeline を出す pane には全部を開く
   - transcript の指示が指す brief (`brief-<name>.md`)
 - 外部入力 (transcript と inbox の本文、pane の label と title) は、端末に出す前に CSI 列を丸ごと落とし、残りの制御文字を空白にする
 - 読めないファイルや herdr の失敗では落ちない。イベント 0 件か、画面上部の警告 1 行になる
 - inbox の報告は `from` (pane id)、`from_socket` (送り手の herdr の socket)、`sent_at` が transcript の開始以降、の 3 つが合うときだけその pane のものとみなす。transcript が空か壊れていて開始時刻が分からない pane には帰属させない。`from_socket` の無い旧形式は帰属させない (別 session の同じ pane id と区別できないため)
+
+Codex のキュー件数は `--json` の `queue: null` で示す。Claude Code の `pr-link` と同じ記録が Codex の rollout に無いため、Codex 上の PR 操作は inbox の報告で確認できる。
 
 ## インストール
 
