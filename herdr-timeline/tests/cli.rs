@@ -186,7 +186,7 @@ fn once_shows_three_sections_without_controls() {
         assert!(out.contains(h), "見出し {h} が出るはず: {out}");
     }
     assert!(
-        out.contains("▲ 窓口 作業場 / 実装  未処理の報告 3 件"),
+        out.contains("▲ 窓口 稼働中 作業場 / 実装  未処理の報告 3 件"),
         "未処理の報告がある run は要対応に出て窓口は名前で呼ぶはず: {out}"
     );
     assert!(
@@ -197,6 +197,89 @@ fn once_shows_three_sections_without_controls() {
         !out.contains('\u{1b}'),
         "外部入力の制御文字は出さないはず: {out:?}"
     );
+}
+
+#[test]
+fn run_alerts_show_owner_state_without_hiding_unread_messages() {
+    let fx = Fx::new("run-alerts");
+    for socket in [
+        "herdr.sock",
+        "sessions/empty/herdr.sock",
+        "sessions/failed/herdr.sock",
+        "sessions/invalid/herdr.sock",
+    ] {
+        fx.write(&format!("herdr/{socket}"), "");
+    }
+    let herdr = fs::read_to_string(fx.path("herdr/herdr.sh")).unwrap();
+    fx.write(
+        "herdr/herdr.sh",
+        &format!(
+            r#"if [ "$1 $2" = 'pane list' ]; then
+  case "$HERDR_SOCKET_PATH" in
+    */empty/herdr.sock) echo '{{"result":{{"panes":[]}}}}'; exit 0 ;;
+    */failed/herdr.sock) exit 1 ;;
+    */invalid/herdr.sock) echo '{{"result":{{"panes":[{{}}]}}}}'; exit 0 ;;
+  esac
+fi
+{herdr}"#,
+        ),
+    );
+
+    let cases = [
+        ("r1", "herdr.sock", "窓口 稼働中 作業場 / 実装"),
+        ("absent", "sessions/empty/herdr.sock", "窓口不在 absent"),
+        ("failed", "sessions/failed/herdr.sock", "状態未確認 failed"),
+        (
+            "invalid",
+            "sessions/invalid/herdr.sock",
+            "状態未確認 invalid",
+        ),
+        (
+            "unseen\u{1b}[31m",
+            "sessions/unseen/herdr.sock",
+            "状態未確認 unseen",
+        ),
+        ("closed", "herdr.sock", "終了済み closed"),
+        ("legacy", "", "状態未確認 legacy"),
+    ];
+    for (id, socket, _) in cases {
+        let prefix = if id == "closed" { "closed_" } else { "" };
+        let mut md = format!("{prefix}orchestrator_pane: wA:p2\n");
+        if !socket.is_empty() {
+            let path = fx.path(&format!("herdr/{socket}"));
+            md.push_str(&format!(
+                "{prefix}orchestrator_socket: {}\n",
+                path.display()
+            ));
+        }
+        fx.write(&format!("runs/{id}/run.md"), &md);
+        let msg = format!("runs/{id}/inbox/new/0-request.msg");
+        fx.msg(
+            &msg,
+            "wA:p2",
+            Some(&fx.sock()),
+            "request",
+            "2026-01-02T03:10:00Z",
+            "引き継ぐ依頼",
+        );
+    }
+    let o = fx.run(&["--once", "--width", "100"]);
+    let out = stdout(&o);
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert!(!out.contains('\u{1b}'), "{out:?}");
+    for (id, _, state) in cases {
+        let msg = format!("runs/{id}/inbox/new/0-request.msg");
+        assert!(
+            out.contains(&format!("{state}  未処理の報告 1 件")),
+            "run の状態と未処理件数が出るはず: {out}"
+        );
+        assert!(
+            fs::read_to_string(fx.path(&msg))
+                .unwrap()
+                .ends_with("引き継ぐ依頼\n"),
+            "未処理の依頼は残るはず"
+        );
+    }
 }
 
 #[test]
@@ -522,7 +605,7 @@ fn hidden_orchestrator_pane_keeps_its_name_in_run_row() {
         "常駐の窓口 pane は一覧から隠れるはず: {a}"
     );
     assert!(
-        a.contains("▲ 窓口 作業場 / 窓口役"),
+        a.contains("▲ 窓口 稼働中 作業場 / 窓口役"),
         "隠した窓口 pane も名前で出るはず (pane id だけにならない): {a}"
     );
 }

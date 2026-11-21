@@ -9,7 +9,7 @@ use crate::text::{
     brief_path, clean, first_line, goal_of, parse_steps, parse_time, progress_names, squash,
 };
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -197,7 +197,16 @@ impl PaneRow {
     }
 }
 
+pub enum RunWindow {
+    Active(String),
+    Absent,
+    Unknown,
+    Closed,
+}
+
 pub struct Run {
+    pub id: String,
+    pub window: RunWindow,
     pub orch: String,
     /// orchestrator_socket。無い旧形式の run は None (pane id だけで照合する)
     pub orch_socket: Option<String>,
@@ -216,7 +225,6 @@ pub struct Snapshot {
     pub warn: Vec<String>,
     pub panes: Vec<PaneRow>,
     pub ws_names: HashMap<(String, String), String>,
-    pub names: HashMap<String, String>,
     pub runs: Vec<Run>,
     /// inbox/new と inbox/cur の *.msg (ファイル名, パス)。中身は使う側が read_msgs で必要なものだけ読む
     pub files: Vec<(String, PathBuf)>,
@@ -246,8 +254,10 @@ pub fn status_of(s: &str) -> &'static str {
 pub fn gather(env: &Env) -> Snapshot {
     let mut snap = Snapshot::default();
     let own = canon(&env.own_sock.to_string_lossy());
-    let mut dup = Vec::new();
-    for (name, sock) in sessions(env) {
+    let sessions = sessions(env);
+    let single_session = sessions.len() == 1;
+    let mut observed_sockets = HashSet::new();
+    for (name, sock) in sessions {
         let socket = sock
             .as_ref()
             .map_or_else(|| own.clone(), |p| canon(&p.to_string_lossy()));
@@ -266,6 +276,20 @@ pub fn gather(env: &Env) -> Snapshot {
                 continue;
             }
         };
+        // 空の一覧は不在を示せるが、壊れた一覧には窓口が含まれていたかもしれない。
+        if panes
+            .get("panes")
+            .and_then(Value::as_array)
+            .is_some_and(|ids| {
+                ids.iter().all(|p| {
+                    p.get("pane_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| !clean(id).is_empty())
+                })
+            })
+        {
+            observed_sockets.insert(socket.clone());
+        }
         let mut get = |what: &str| {
             herdr(env, &[what, "list"], sock.as_deref()).unwrap_or_else(|e| {
                 snap.warn.push(at(e));
@@ -336,9 +360,6 @@ pub fn gather(env: &Env) -> Snapshot {
                 }
             }
             let pname = seen.join(" / ");
-            if snap.names.insert(pane.clone(), pname.clone()).is_some() {
-                dup.push(pane.clone());
-            }
             let tag = if name.is_empty() {
                 pane.clone()
             } else {
@@ -378,16 +399,12 @@ pub fn gather(env: &Env) -> Snapshot {
             });
         }
     }
-    for d in dup {
-        snap.names.remove(&d); // 別 session に同じ id がある pane は名前を引けない
-    }
     snap.panes
         .sort_by(|a, b| a.pane.cmp(&b.pane).then(a.key.cmp(&b.key)));
     if let Some(runs) = &env.runs {
-        read_runs(runs, &mut snap);
+        read_runs(runs, &observed_sockets, single_session, &mut snap);
     }
     mark_dispatched(&mut snap);
-    // 隠した pane の名前は上で snap.names に入れてあるので残る
     if !env.keep_hidden && !env.show_resident {
         snap.panes.retain(|r| !r.hidden());
     }
@@ -507,7 +524,12 @@ pub fn parse_msg(text: &str) -> Option<Msg> {
 }
 
 /// run は RUNS/<run>/run.md を持つディレクトリ。inbox は new と cur だけを見る (tmp などの書きかけを拾わない)
-fn read_runs(dir: &Path, snap: &mut Snapshot) {
+fn read_runs(
+    dir: &Path,
+    observed_sockets: &HashSet<String>,
+    single_session: bool,
+    snap: &mut Snapshot,
+) {
     let mut names: Vec<PathBuf> = fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -530,8 +552,37 @@ fn read_runs(dir: &Path, snap: &mut Snapshot) {
             .find_map(|l| l.strip_prefix("orchestrator_socket:"))
             .map(clean)
             .filter(|s| !s.is_empty());
+        let socket = orch_socket.as_deref().map(canon);
+        let pane = snap
+            .panes
+            .iter()
+            .find(|p| p.pane == orch && socket.as_ref().map_or(single_session, |s| &p.socket == s));
+        let window = if orch.is_empty()
+            && md
+                .lines()
+                .any(|l| l.starts_with("closed_orchestrator_pane:"))
+        {
+            RunWindow::Closed
+        } else if orch.is_empty() || orch == "unknown" {
+            RunWindow::Unknown
+        } else if let Some(pane) = pane {
+            RunWindow::Active(if pane.name.is_empty() {
+                pane.pane.clone()
+            } else {
+                pane.name.clone()
+            })
+        } else if socket
+            .as_ref()
+            .is_some_and(|s| observed_sockets.contains(s))
+        {
+            RunWindow::Absent
+        } else {
+            RunWindow::Unknown
+        };
         let new = msg_files(&run.join("inbox/new"));
         snap.runs.push(Run {
+            id: clean(&run.file_name().unwrap_or_default().to_string_lossy()),
+            window,
             orch,
             orch_socket,
             new: new.len(),
