@@ -218,7 +218,7 @@ fn run_alerts_show_owner_state_without_hiding_unread_messages() {
   case "$HERDR_SOCKET_PATH" in
     */empty/herdr.sock) echo '{{"result":{{"panes":[]}}}}'; exit 0 ;;
     */failed/herdr.sock) exit 1 ;;
-    */invalid/herdr.sock) echo '{{"result":{{"panes":[{{}}]}}}}'; exit 0 ;;
+    */invalid/herdr.sock) echo '{{"result":{{"panes":[{{"pane_id":"wA:p2"}},{{}}]}}}}'; exit 0 ;;
   esac
 fi
 {herdr}"#,
@@ -240,7 +240,6 @@ fi
             "状態未確認 unseen",
         ),
         ("closed", "herdr.sock", "終了済み closed"),
-        ("legacy", "", "状態未確認 legacy"),
     ];
     for (id, socket, _) in cases {
         let prefix = if id == "closed" { "closed_" } else { "" };
@@ -280,6 +279,28 @@ fi
             "未処理の依頼は残るはず"
         );
     }
+}
+
+#[test]
+fn legacy_run_alerts_only_match_the_default_session() {
+    let fx = Fx::new("legacy-run-alerts");
+    fx.write("herdr/sessions/workers/herdr.sock", "");
+    fx.write("runs/r1/inbox/new/0-request.msg", "");
+
+    let absent_default = fx.run(&["--once", "--width", "100"]);
+    assert!(
+        stdout(&absent_default).contains("状態未確認 r1  未処理の報告 1 件"),
+        "別セッションの同じ pane ID は窓口ではないはず: {}",
+        stdout(&absent_default)
+    );
+
+    fx.write("herdr/herdr.sock", "");
+    let default = fx.run(&["--once", "--width", "100"]);
+    assert!(
+        stdout(&default).contains("窓口 稼働中 作業場 / 実装  未処理の報告 1 件"),
+        "default の窓口を表示するはず: {}",
+        stdout(&default)
+    );
 }
 
 #[test]

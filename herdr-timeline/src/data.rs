@@ -254,10 +254,8 @@ pub fn status_of(s: &str) -> &'static str {
 pub fn gather(env: &Env) -> Snapshot {
     let mut snap = Snapshot::default();
     let own = canon(&env.own_sock.to_string_lossy());
-    let sessions = sessions(env);
-    let single_session = sessions.len() == 1;
     let mut observed_sockets = HashSet::new();
-    for (name, sock) in sessions {
+    for (name, sock) in sessions(env) {
         let socket = sock
             .as_ref()
             .map_or_else(|| own.clone(), |p| canon(&p.to_string_lossy()));
@@ -402,7 +400,8 @@ pub fn gather(env: &Env) -> Snapshot {
     snap.panes
         .sort_by(|a, b| a.pane.cmp(&b.pane).then(a.key.cmp(&b.key)));
     if let Some(runs) = &env.runs {
-        read_runs(runs, &observed_sockets, single_session, &mut snap);
+        let default_socket = canon(&env.herdr_dir.join("herdr.sock").to_string_lossy());
+        read_runs(runs, &observed_sockets, &default_socket, &mut snap);
     }
     mark_dispatched(&mut snap);
     if !env.keep_hidden && !env.show_resident {
@@ -527,7 +526,7 @@ pub fn parse_msg(text: &str) -> Option<Msg> {
 fn read_runs(
     dir: &Path,
     observed_sockets: &HashSet<String>,
-    single_session: bool,
+    default_socket: &str,
     snap: &mut Snapshot,
 ) {
     let mut names: Vec<PathBuf> = fs::read_dir(dir)
@@ -552,32 +551,29 @@ fn read_runs(
             .find_map(|l| l.strip_prefix("orchestrator_socket:"))
             .map(clean)
             .filter(|s| !s.is_empty());
+        // default の窓口は socket を台帳に書かない場合がある。
         let socket = orch_socket.as_deref().map(canon);
-        let pane = snap
-            .panes
-            .iter()
-            .find(|p| p.pane == orch && socket.as_ref().map_or(single_session, |s| &p.socket == s));
+        let socket = socket.as_deref().unwrap_or(default_socket);
         let window = if orch.is_empty()
             && md
                 .lines()
                 .any(|l| l.starts_with("closed_orchestrator_pane:"))
         {
             RunWindow::Closed
-        } else if orch.is_empty() || orch == "unknown" {
+        } else if orch.is_empty() || orch == "unknown" || !observed_sockets.contains(socket) {
             RunWindow::Unknown
-        } else if let Some(pane) = pane {
+        } else if let Some(pane) = snap
+            .panes
+            .iter()
+            .find(|p| p.pane == orch && p.socket == socket)
+        {
             RunWindow::Active(if pane.name.is_empty() {
                 pane.pane.clone()
             } else {
                 pane.name.clone()
             })
-        } else if socket
-            .as_ref()
-            .is_some_and(|s| observed_sockets.contains(s))
-        {
-            RunWindow::Absent
         } else {
-            RunWindow::Unknown
+            RunWindow::Absent
         };
         let new = msg_files(&run.join("inbox/new"));
         snap.runs.push(Run {
