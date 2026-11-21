@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.2.3](https://github.com/nekottyo/agent-tools/compare/inbox-core/v0.2.2...inbox-core/v0.2.3) - 2026-11-21
+
+### Changes
+- test: 形式検証を先に更新し CI で証明を確認する by @nekottyo in https://github.com/nekottyo/agent-tools/pull/57
+
 ## [v0.2.2](https://github.com/nekottyo/agent-tools/compare/inbox-core/v0.2.1...inbox-core/v0.2.2) - 2026-11-20
 
 ### Changes
