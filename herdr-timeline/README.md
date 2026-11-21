@@ -2,7 +2,7 @@
 
 herdr (端末の multiplexer) の pane を「要対応 / 作業中 / done・idle」の 3 段で一覧し、選んだ pane の Timeline (人の指示、他 pane からのメッセージ、PR、inbox の報告) を新しい順に出す端末 UI。DeepSeek Harness (DSH) の Timeline を参考にした。
 
-- 要対応: blocked の pane と、inbox/new に未処理の報告がある run
+- 要対応: blocked の pane と、inbox/new に未処理の報告がある run。窓口の稼働・不在・状態未確認・終了済みを区別し、稼働中以外の行には run 名と未処理件数を表示する
 - 作業中: working の pane。brief のゴールと step の進捗を要約に出す
 - done / idle: workspace ごとに畳んで件数だけ出す
 - 常駐の pane (Cue の回答を処理する専任 worker、watch 系の監視、watch-worker、review-submit) は既定で一覧に出さない。herdr の API に常駐の印が無いので、pane の label の完全一致で見分ける (一覧は `src/data.rs` の `RESIDENT_LABELS`)。監視 skill の dispatch が起こす PR review の pane (label が `<repo略称>-<PR番号>` / `<repo略称>-bundle-<PR番号>`) も外す。`feat-xxx-34` のような無関係な pane に当たらないよう、label の形と「run に属さない」(inbox の msg が帰属しない、orchestrator_pane でない) の両方で見分け、`--runs-dir` が無いときは外さない。ただし blocked の pane は人の対応待ちなので隠さない。起動直後で最初の報告がまだ無い worker は、label が dispatch の形だと報告が付くまで隠れうる (窓口の orchestrator_pane は外れない)。`--show-resident` で全部出せる

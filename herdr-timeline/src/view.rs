@@ -1,7 +1,7 @@
 // 画面の組み立て。描画する文字列を返すだけで、端末には触らない (試作の layout と同じ見た目を目標にする)。
 
 use crate::core::{group, total, Event, Kind, Status};
-use crate::data::{Detail, Goal, Run};
+use crate::data::{Detail, Goal, Run, RunWindow};
 use crate::text::{age_text, clip, clip_head, fit, fmt_stamp, pad, tl_body, width_of, wrap};
 use std::collections::HashMap;
 
@@ -42,7 +42,6 @@ pub struct View<'a> {
     pub rows: &'a [Row],
     pub runs: &'a [Run],
     pub warn: &'a [String],
-    pub names: &'a HashMap<String, String>,
     pub ws_names: &'a HashMap<(String, String), String>,
     pub width: usize,
     pub color: bool,
@@ -389,15 +388,6 @@ pub fn layout(v: &View) -> (Vec<String>, Vec<(String, String)>, Option<String>) 
         .min(NAME_MAX)
         .min(8.max(avail * 45 / 100) as usize);
 
-    let who = |pane: &str| {
-        v.names.get(pane).cloned().unwrap_or_else(|| {
-            if pane.is_empty() {
-                "-".into()
-            } else {
-                pane.to_string()
-            }
-        })
-    };
     let age = |x: &Row| {
         let t = age_text(x.since.map(|s| v.now - s));
         pad(
@@ -508,8 +498,14 @@ pub fn layout(v: &View) -> (Vec<String>, Vec<(String, String)>, Option<String>) 
                 Alert::Run(r) => {
                     let t = age_text(since.map(|s| v.now - s));
                     let t = if t.is_empty() { t } else { format!("  {t}") };
+                    let window = match &r.window {
+                        RunWindow::Active(name) => format!("窓口 稼働中 {name}"),
+                        RunWindow::Absent => format!("窓口不在 {}", r.id),
+                        RunWindow::Unknown => format!("状態未確認 {}", r.id),
+                        RunWindow::Closed => format!("終了済み {}", r.id),
+                    };
                     blocks.push(para(
-                        &format!("▲ 窓口 {}  未処理の報告 {} 件{t}", who(&r.orch), r.new),
+                        &format!("▲ {window}  未処理の報告 {} 件{t}", r.new),
                         2,
                         ALERT_STYLE,
                         2,
@@ -765,13 +761,12 @@ mod tests {
             row("a", "working", "p1", Some("t1")),
             row("b/p2", "working", "b/p2", None),
         ];
-        let (names, ws) = (HashMap::new(), HashMap::new());
+        let ws = HashMap::new();
         let prev = Vec::new();
         let v = View {
             rows: &rows,
             runs: &[],
             warn: &[],
-            names: &names,
             ws_names: &ws,
             width: 80,
             color: false,
@@ -794,12 +789,11 @@ mod tests {
             "very-long-session-name-for-test/wA:p2",
         );
         let rows = [row("a", "working", t1, None), row("b", "blocked", t2, None)];
-        let (names, ws) = (HashMap::new(), HashMap::new());
+        let ws = HashMap::new();
         let v = View {
             rows: &rows,
             runs: &[],
             warn: &[],
-            names: &names,
             ws_names: &ws,
             width: 60,
             color: false,
@@ -977,12 +971,11 @@ mod tests {
             row("b", "done", "p2", Some("t2")),
             row("c", "idle", "p3", Some("t3")),
         ];
-        let (names, ws) = (HashMap::new(), HashMap::new());
+        let ws = HashMap::new();
         let v = View {
             rows: &rows,
             runs: &[],
             warn: &[],
-            names: &names,
             ws_names: &ws,
             width: 40,
             color: true,
@@ -1024,13 +1017,12 @@ mod tests {
     #[test]
     fn working_row_symbol_is_colored_only_with_color() {
         let rows = [row("a", "working", "p1", Some("t1"))];
-        let (names, ws) = (HashMap::new(), HashMap::new());
+        let ws = HashMap::new();
         let mk = |color| {
             let v = View {
                 rows: &rows,
                 runs: &[],
                 warn: &[],
-                names: &names,
                 ws_names: &ws,
                 width: 80,
                 color,
