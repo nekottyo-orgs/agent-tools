@@ -151,4 +151,6 @@ worker は inbox に `tag: progress` の msg を送り、本文の最初の行�
 
 判定部 (並び順、まとめ、行の分類、帰属、session_id の検証、brief と進捗) は [`lean/HerdrTimeline.lean`](lean/HerdrTimeline.lean) にモデルと性質の証明がある。Rust (`src/core.rs`) は関数の名前と判定をモデルに揃え、一致は `src/core.rs` の `#[cfg(test)]` が同じ入力の例で確かめる。
 
-証明が残っている (`sorry`) 定理は無い (`lake build` が通り、`sorry` は 0 件)。
+未処理報告の窓口状態は同じモデルの `runWindow` にあり、Rust の `src/data.rs` の `read_runs` に対応する。不在は一覧の取得と解釈に成功した場合だけで、稼働中にするには pane ID と socket の両方の一致が必要。socket の正規化と一覧が観測済みかどうかはモデルへの入力であり、Rust の CLI テストが空の一覧、取得失敗、不正な一覧、別セッションを通して確かめる。
+
+証明は `cd herdr-timeline/lean && lake build --wfail`、実装との対応はリポジトリ直下から `cargo test --locked -p herdr-timeline` で確認する。

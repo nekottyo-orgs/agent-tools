@@ -445,7 +445,7 @@ theorem done_subset (steps : List Str) (ps : List Progress) (done : List Str) (u
     exact ⟨fun x hx => (List.mem_filter.mp hx).1, List.length_filter_le _ _⟩
 
 /-- [progress] が 1 通も無いことと、0 step 済みは区別される -/
-theorem unreported_ne_zero (steps : List Str) (u : Nat) : Status.unreported ≠ Status.reported [] u := by
+theorem unreported_ne_zero (_steps : List Str) (u : Nat) : Status.unreported ≠ Status.reported [] u := by
   intro h; cases h
 
 theorem unreported_iff (steps : List Str) (ps : List Progress) :
@@ -536,5 +536,74 @@ theorem status_indep (steps : List Str) (xs ys : List Progress) (h : xs.Perm ys)
         simp only [Prod.mk.injEq]; omega
   unfold status
   rw [hl]
+
+
+/-! ## 未処理報告の窓口 -/
+
+structure RunPane where
+  id : Str
+  socket : Str
+  label : Str
+  deriving DecidableEq, Repr
+
+inductive RunWindow where
+  | active (label : Str)
+  | absent
+  | unknown
+  | closed
+  deriving DecidableEq, Repr
+
+def windowMatches (id socket : Str) (pane : RunPane) : Bool :=
+  pane.id == id && pane.socket == socket
+
+/-- Rust の read_runs に対応。socket は正規化済みで、observed は一覧が取得でき全 ID を読めたときだけ真。 -/
+def runWindow (id socket : Str) (closed observed : Bool) (panes : List RunPane) : RunWindow :=
+  if id.isEmpty && closed then .closed
+  else if id.isEmpty || id == "unknown".toList || !observed then .unknown
+  else match panes.find? (windowMatches id socket) with
+    | some pane => .active (if pane.label.isEmpty then pane.id else pane.label)
+    | none => .absent
+
+theorem runWindow_absent_requires_observation (id socket : Str) (closed observed : Bool)
+    (panes : List RunPane) (h : runWindow id socket closed observed panes = .absent) :
+    observed = true ∧ ∀ p ∈ panes, p.id ≠ id ∨ p.socket ≠ socket := by
+  unfold runWindow at h
+  split at h <;> try contradiction
+  split at h <;> try contradiction
+  rename_i hn
+  split at h <;> try contradiction
+  rename_i hf
+  have ho : observed = true := by
+    cases observed <;> simp_all
+  refine ⟨ho, ?_⟩
+  intro p hp
+  have hm := List.find?_eq_none.mp hf p hp
+  by_cases hi : p.id = id
+  · right
+    intro hs
+    simp [windowMatches, hi, hs] at hm
+  · exact Or.inl hi
+
+theorem runWindow_active_requires_same_socket (id socket label : Str) (closed observed : Bool)
+    (panes : List RunPane) (h : runWindow id socket closed observed panes = .active label) :
+    ∃ p ∈ panes, p.id = id ∧ p.socket = socket := by
+  unfold runWindow at h
+  split at h <;> try contradiction
+  split at h <;> try contradiction
+  split at h <;> try contradiction
+  rename_i pane hf
+  refine ⟨pane, List.mem_of_find?_eq_some hf, ?_⟩
+  simpa [windowMatches] using List.find?_some hf
+
+example : runWindow "p".toList "primary".toList false true
+    [⟨"p".toList, "secondary".toList, []⟩] = .absent := rfl
+
+example : runWindow "p".toList "primary".toList false false
+    [⟨"p".toList, "primary".toList, []⟩] = .unknown := rfl
+
+example : runWindow [] "primary".toList true false [] = .closed := rfl
+
+example : runWindow "p".toList "primary".toList false true
+    [⟨"p".toList, "primary".toList, []⟩] = .active "p".toList := rfl
 
 end HerdrTimeline

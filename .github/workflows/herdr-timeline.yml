@@ -55,4 +55,4 @@ jobs:
         run: cargo test --locked -p herdr-timeline
 
       - name: Lean
-        run: cd herdr-timeline/lean && lake build
+        run: cd herdr-timeline/lean && lake build --wfail

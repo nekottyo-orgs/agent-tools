@@ -1,4 +1,4 @@
-# inbox-core/ の lint・回帰テストと、Lean の証明が今の lib.rs に対するものかの照合。tool ごとに workflow を分け、path filter で他の tool の変更では走らせない。
+# inbox-core/ の lint・回帰テストと、現在の lib.rs の Lean への翻訳・証明。tool ごとに workflow を分け、path filter で他の tool の変更では走らせない。
 # workspace の root の Cargo.toml (release profile) と Cargo.lock は全 tool に効くので、変更されたら走らせる。
 # toolchain の version (Rust 1.98) は bash-gates.yml と同じ値に固定する。
 # action は .github/workflows/actions.lock に固定する (gh actions-lock で更新)。
@@ -41,7 +41,12 @@ jobs:
       - name: Test
         run: cargo test --locked -p inbox-core
 
-      # 証明は Aeneas / Charon / Lean の nightly と Mathlib を要し、CI には無いので lake build は回さない (inbox-core/lean/README.md)。
-      # 代わりに、最後に証明が通った lib.rs の sha256 (regen.sh --update が書く) と今の lib.rs を照合し、証明の古びを落とす
-      - name: Lean
-        run: cd inbox-core && echo "$(cat lean/lib.rs.sha256)  src/lib.rs" | sha256sum -c -
+      - name: Install formal verification toolchain
+        env:
+          AENEAS_SPIKE: ${{ runner.temp }}/inbox-core-lean
+        run: bash inbox-core/lean/setup-ci.sh
+
+      - name: Regenerate Lean and check proofs
+        env:
+          AENEAS_SPIKE: ${{ runner.temp }}/inbox-core-lean
+        run: bash inbox-core/lean/regen.sh
