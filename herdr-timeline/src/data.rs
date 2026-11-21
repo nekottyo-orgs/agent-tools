@@ -664,7 +664,7 @@ impl TranscriptPaths {
             rollouts: if wanted.is_empty() {
                 HashMap::new()
             } else {
-                codex_rollouts(&env.codex_sessions, &wanted)
+                codex_rollouts(&env.codex_sessions, &wanted).unwrap_or_default()
             },
         }
     }
@@ -689,50 +689,63 @@ fn uuid(id: &str) -> bool {
         })
 }
 
-fn dated_dirs(path: &Path, len: usize) -> impl Iterator<Item = PathBuf> {
-    fs::read_dir(path)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(move |e| {
-            let name = e.file_name();
-            let name = name.to_str()?;
-            (name.len() == len
-                && name.bytes().all(|b| b.is_ascii_digit())
-                && e.file_type().ok()?.is_dir())
-            .then(|| e.path())
-        })
-}
-
-fn codex_rollouts(sessions: &Path, wanted: &HashSet<&str>) -> HashMap<String, PathBuf> {
-    let days = dated_dirs(sessions, 4)
-        .flat_map(|year| dated_dirs(&year, 2))
-        .flat_map(|month| dated_dirs(&month, 2));
-    let mut candidates: HashMap<String, Option<PathBuf>> = HashMap::new();
-    for entry in days.flat_map(|day| fs::read_dir(day).into_iter().flatten().flatten()) {
-        let name = entry.file_name();
-        let Some(id) = name
+fn dated_dirs(path: &Path, len: usize) -> std::io::Result<Vec<PathBuf>> {
+    let mut dirs = Vec::new();
+    for entry in fs::read_dir(path)? {
+        let e = entry?;
+        let name = e.file_name();
+        if name
             .to_str()
-            .and_then(rollout_id)
-            .filter(|id| wanted.contains(id))
-        else {
-            continue;
-        };
-        if entry.file_type().is_ok_and(|t| t.is_file()) {
-            candidates
-                .entry(id.to_owned())
-                .and_modify(|p| *p = None)
-                .or_insert_with(|| Some(entry.path()));
+            .is_some_and(|s| s.len() == len && s.bytes().all(|b| b.is_ascii_digit()))
+            && e.file_type()?.is_dir()
+        {
+            dirs.push(e.path());
         }
     }
-    candidates
+    Ok(dirs)
+}
+
+fn codex_rollouts(
+    sessions: &Path,
+    wanted: &HashSet<&str>,
+) -> std::io::Result<HashMap<String, PathBuf>> {
+    let mut days = vec![sessions.to_path_buf()];
+    for len in [4, 2, 2] {
+        let mut next = Vec::new();
+        for day in days {
+            next.extend(dated_dirs(&day, len)?);
+        }
+        days = next;
+    }
+    let mut candidates: HashMap<String, Option<PathBuf>> = HashMap::new();
+    // 読み飛ばしたディレクトリに同じ ID の候補があるかもしれない。
+    for day in days {
+        for entry in fs::read_dir(day)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(id) = name
+                .to_str()
+                .and_then(rollout_id)
+                .filter(|id| wanted.contains(id))
+            else {
+                continue;
+            };
+            if entry.file_type()?.is_file() {
+                candidates
+                    .entry(id.to_owned())
+                    .and_modify(|p| *p = None)
+                    .or_insert_with(|| Some(entry.path()));
+            }
+        }
+    }
+    Ok(candidates
         .into_iter()
         .filter_map(|(id, path)| {
             let path = path?;
             open_transcript(&path, Some(&id))?;
             Some((id, path))
         })
-        .collect()
+        .collect())
 }
 
 fn rollout_id(name: &str) -> Option<&str> {

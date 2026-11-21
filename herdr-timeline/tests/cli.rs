@@ -1697,4 +1697,14 @@ fn codex_timeline_uses_only_the_reported_session_and_its_user_items() {
         &good,
     );
     assert!(read().contains("transcript が見つからない"));
+
+    use std::os::unix::fs::PermissionsExt;
+    let hidden_day = fx.path("codex/sessions/2026/11/22");
+    fs::set_permissions(&hidden_day, fs::Permissions::from_mode(0o000)).unwrap();
+    let unreadable = fs::read_dir(&hidden_day).is_err();
+    let out = read();
+    fs::set_permissions(&hidden_day, fs::Permissions::from_mode(0o700)).unwrap();
+    if unreadable {
+        assert!(out.contains("transcript が見つからない"), "{out}");
+    }
 }

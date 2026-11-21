@@ -609,32 +609,33 @@ example : runWindow "p".toList "primary".toList false true
 /-! ## Codex 履歴の紐付け
 
 Herdr が現在の pane に報告した ID と、標準配置のファイル名・先頭行から読んだ ID を照合する。
-UUID の構文検査、ディレクトリ探索、JSON の解釈、Herdr 側の生存判定は実装の責任とする。
+探索の完全性は入力。UUID の構文検査、ディレクトリ探索、JSON の解釈、Herdr 側の生存判定は実装の責任とする。
 -/
 
 structure Rollout where
   filenameId : Str
   headerId : Option Str
 
-def selectRollout (reported : Option Str) (candidates : List Rollout) : Option Rollout :=
-  match reported, candidates with
-  | some id, [r] =>
+def selectRollout (complete : Bool) (reported : Option Str) (candidates : List Rollout) : Option Rollout :=
+  match complete, reported, candidates with
+  | true, some id, [r] =>
     if r.filenameId = id ∧ r.headerId = some id then some r else none
-  | _, _ => none
+  | _, _, _ => none
 
-theorem selectRollout_sound (reported : Option Str) (candidates : List Rollout) (r : Rollout)
-    (h : selectRollout reported candidates = some r) :
-    candidates = [r] ∧ reported = some r.filenameId ∧ r.headerId = reported := by
+theorem selectRollout_sound (complete : Bool) (reported : Option Str) (candidates : List Rollout) (r : Rollout)
+    (h : selectRollout complete reported candidates = some r) :
+    complete = true ∧ candidates = [r] ∧ reported = some r.filenameId ∧ r.headerId = reported := by
   unfold selectRollout at h
   split at h <;> try contradiction
   split at h <;> try contradiction
   rename_i hverified
   cases h
-  exact ⟨rfl, congrArg some hverified.1.symm, hverified.2⟩
+  exact ⟨rfl, rfl, congrArg some hverified.1.symm, hverified.2⟩
 
-example : selectRollout none [⟨['a'], some ['a']⟩] = none := rfl
-example : selectRollout (some ['a']) [⟨['a'], some ['b']⟩] = none := rfl
-example : selectRollout (some ['a']) [⟨['a'], some ['a']⟩, ⟨['a'], some ['a']⟩] = none := rfl
-example : (selectRollout (some ['a']) [⟨['a'], some ['a']⟩]).isSome = true := rfl
+example : selectRollout false (some ['a']) [⟨['a'], some ['a']⟩] = none := rfl
+example : selectRollout true none [⟨['a'], some ['a']⟩] = none := rfl
+example : selectRollout true (some ['a']) [⟨['a'], some ['b']⟩] = none := rfl
+example : selectRollout true (some ['a']) [⟨['a'], some ['a']⟩, ⟨['a'], some ['a']⟩] = none := rfl
+example : (selectRollout true (some ['a']) [⟨['a'], some ['a']⟩]).isSome = true := rfl
 
 end HerdrTimeline
