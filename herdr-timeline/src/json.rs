@@ -155,7 +155,7 @@ mod tests {
                 kind: None,
                 sid: None,
                 codex: false,
-                tab_id: None,
+                tab_target: None,
                 ws: (String::new(), String::new()),
                 socket: String::new(),
             };
