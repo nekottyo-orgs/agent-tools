@@ -59,11 +59,21 @@ cp "$release_dir/release.json" "$evidence_root/$run_id-release/release.json"
 
 ```bash
 (
-  candidate_status=$(git status --porcelain) &&
-    test -z "$candidate_status" &&
-    candidate_commit=$(git rev-parse HEAD) &&
-    candidate_target=$(mktemp -d /private/tmp/tl-candidate.XXXXXX) &&
-    cargo build --locked -p herdr-timeline --target-dir "$candidate_target" &&
+  evidence_root="$HOME/.local/state/herdr-timeline-verification"
+  mkdir -p "$evidence_root" || exit
+  candidate_status=$(git status --porcelain) || exit
+  test -z "$candidate_status" || exit
+  candidate_commit=$(git rev-parse HEAD) || exit
+  candidate_target=$(mktemp -d /private/tmp/tl-candidate.XXXXXX) || exit
+  trap '
+    status=$?
+    if ! rm -rf -- "$candidate_target"; then
+      printf "Failed to remove candidate target: %s\n" "$candidate_target" >&2
+      if [ "$status" -eq 0 ]; then status=1; fi
+    fi
+    exit "$status"
+  ' EXIT
+  cargo build --locked -p herdr-timeline --target-dir "$candidate_target" &&
     test "$(git rev-parse HEAD)" = "$candidate_commit" &&
     run_id=$(uuidgen) &&
     .claude/skills/verify-herdr-timeline/scripts/codex-history.py \
@@ -77,10 +87,10 @@ cp "$release_dir/release.json" "$evidence_root/$run_id-release/release.json"
 
 ## 証跡
 
-`commands.jsonl` に版、SHA、コマンド、標準出力・標準エラー・終了コード、hook の登録、pane・session・rollout・本文、停止結果が残る。タイムアウトや起動失敗時も、対象コマンドと取得済みの出力、失敗理由が残る。`herdr.log` で隔離ソケットと起動を確認できる。最後の `status: passed` と `temporary_state_removed: true` は片付けも完了した印。失敗時は最後の操作、エラー、未確認の項目を記録する。初回試走は TUI のフォーカス、Claude Code の履歴、実アカウントや実モデルを対象としていない。
+`commands.jsonl` に版、SHA、コマンド、標準出力・標準エラー・終了コード、hook の登録、pane・session・rollout・本文、停止結果が残る。タイムアウトや起動失敗時も、対象コマンドと取得済みの出力、失敗理由が残る。`herdr.log` で隔離ソケットと起動を確認できる。最後の `status: passed` と `temporary_state_removed: true` は、隔離環境の片付けまで完了した印。候補版の合格には、新規 target の削除を含むコードブロックの終了コード 0 も必要。失敗時は最後の操作、エラー、未確認の項目を記録する。初回試走は TUI のフォーカス、Claude Code の履歴、実アカウントや実モデルを対象としていない。
 
 ## 後片付け
 
-スクリプトは自分で起動した Herdr のソケットだけに `herdr server stop` を送り、停止とソケット消失を確認してから模擬モデルと一時データを片付ける。異常終了時は `herdr.log` の socket を確認し、自分の試走のものと一致する場合に限り `HERDR_SOCKET_PATH=<その絶対パス> herdr server stop` で停止する。証跡ディレクトリは残す。
+スクリプトは自分で起動した Herdr のソケットだけに `herdr server stop` を送り、停止とソケット消失を確認してから模擬モデルと一時データを片付ける。異常終了時は `herdr.log` の socket を確認し、自分の試走のものと一致する場合に限り `HERDR_SOCKET_PATH=<その絶対パス> herdr server stop` で停止する。候補版の実行ブロックは終了時にその回の target ディレクトリを削除する。証跡ディレクトリは残す。
 
 入口や合格条件が変わった日は `/maintain-verification-skill` で機能マップを照合する。
