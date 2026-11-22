@@ -1013,6 +1013,7 @@ fn mixed_fx(name: &str) -> Fx {
     list.push(pane("wA:p9", "blocked", SID2, "tA:2", "wA", RESIDENT[0]));
     list.push(pane("wA:p10", "blocked", SID2, "tA:2", "wA", RESIDENT[3]));
     list.push(pane("wA:p11", "idle", SID2, "tA:2", "wA", RESIDENT[4]));
+    list.push(pane("wA:p12", "unknown", SID2, "tA:3", "wA", "補助"));
     list.push(pane("wB:p2", "unknown", SID2, "tB:1", "wB", "補助"));
     fx.write("herdr/panes.json", &panes.to_string());
     // wA:p6 は台帳に属す (inbox の msg が帰属する)
@@ -1095,18 +1096,26 @@ fn json_matches_once_rows_and_folded_counts() {
         v["warnings"].as_array().unwrap().is_empty(),
         "警告は無いはず: {v}"
     );
+    for (id, status) in [("wA:p3", "idle"), ("wA:p12", "unknown"), ("wB:p1", "done")] {
+        assert_eq!(
+            jpane(&v, id)["status"],
+            status,
+            "JSON の状態が残るはず: {id}"
+        );
+    }
     let out = stdout(&fx.run(&["--once", "--width", "100"]));
     let (mut rows, folded) = once_counts(&out);
     rows.sort();
     let (keys, rest) = json_split(&v, false);
     assert_eq!(keys, rows, "個別の行の集合が一致するはず");
     assert_eq!(rest, folded, "畳んだ件数の合計が一致するはず");
-    assert!(
-        out.split_once("作業場  ○ 1")
-            .is_some_and(|(_, rest)| rest.contains("別件  · 1"))
-            && !out.contains('✓'),
-        "workspace の順序と idle・unknown の集計を保つはず: {out}"
+    assert_eq!(
+        out.split_once("■ idle / unknown\n")
+            .map(|(_, tallies)| tallies.trim_end()),
+        Some("  作業場  ○ 1  · 1\n  別件  · 1"),
+        "workspace の順序と idle・unknown の件数を保つはず: {out}"
     );
+    assert!(!out.contains('✓'), "done は一覧に出さないはず: {out}");
     let (mut rows, folded) = once_counts(&stdout(&fx.run(&[
         "--once",
         "--width",
