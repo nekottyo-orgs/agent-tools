@@ -62,11 +62,7 @@ pub fn judge(
     }
     // human_action に入った後に判断待ちが付いたら human_decision へ戻す。human_action からは next_lane が動かさず、問いが人に出ないため。
     // 入った経路 (merge-wait / StallCap) や今の CI には依らず、生きた worker が判断を待つ事実だけで決める。judge に履歴の入力を足さないため
-    if k.kind == Kind::Implement
-        && matches!(from, Lane::HumanAction)
-        && f.waiting
-        && matches!(f.panes, Panes::Live)
-    {
+    if matches!(from, Lane::HumanAction) && f.waiting && matches!(f.panes, Panes::Live) {
         return Verdict::Move(Move {
             rule: Rule::Waiting,
             dest: Lane::HumanDecision,
@@ -306,7 +302,7 @@ mod tests {
         ] {
             assert_eq!(go(Lane::HumanAction, waiting, open), "move 4 2");
         }
-        // 条件が欠ければ動かさない: pane が無い、waiting でない、implement でない
+        // 条件が欠ければ動かさない: pane が無い、waiting でない
         let gone = TaskFacts {
             panes: Panes::Absent,
             ..waiting
@@ -314,11 +310,6 @@ mod tests {
         assert_eq!(go(Lane::HumanAction, gone, k), "stay");
         let calm = base();
         assert_eq!(go(Lane::HumanAction, calm, k), "stay");
-        let monitor = KindFacts {
-            kind: Kind::Monitor,
-            ..k
-        };
-        assert_eq!(go(Lane::HumanAction, waiting, monitor), "stay");
         // 判断待ちが続く間は human_decision に留まる
         assert_eq!(go(Lane::HumanDecision, waiting, k), "stay");
         // 回答後は todo へ戻り、todo から merge-wait で human_action に進む。waiting が止んだ後は human_action で動かない
@@ -329,6 +320,39 @@ mod tests {
         assert_eq!(go(Lane::HumanDecision, answered, k), "move 3 0"); // Answered -> Todo
         assert_eq!(go(Lane::Todo, answered, k), "merge-wait");
         assert_eq!(go(Lane::HumanAction, answered, k), "stay");
+    }
+
+    #[test]
+    fn 非実装の_human_action_も生きた_pane_の判断待ちへ移る() {
+        let waiting = TaskFacts {
+            waiting: true,
+            ..base()
+        };
+        // answered は以前の linked Cue を指すことがある。次の未回答 Cue は waiting で分かる。
+        let new_wait = TaskFacts {
+            answered: true,
+            ..waiting
+        };
+        let answered = TaskFacts {
+            waiting: false,
+            ..new_wait
+        };
+        for kind in [Kind::Decision, Kind::Monitor, Kind::Research] {
+            let k = kf(kind);
+            assert_eq!(go(Lane::HumanAction, waiting, k), "move 4 2");
+            assert_eq!(go(Lane::HumanAction, new_wait, k), "move 4 2");
+            assert_eq!(go(Lane::HumanAction, answered, k), "stay");
+            for panes in [Panes::Absent, Panes::Closed, Panes::Unknown] {
+                assert_eq!(
+                    go(Lane::HumanAction, TaskFacts { panes, ..waiting }, k),
+                    "stay"
+                );
+            }
+            let marked = KindFacts { marker: true, ..k };
+            assert_eq!(go(Lane::HumanAction, waiting, marked), "end-marker");
+            assert_eq!(go(Lane::Done, waiting, marked), "stay");
+        }
+        assert_eq!(go(Lane::HumanAction, waiting, kf(Kind::Unset)), "stay");
     }
 
     #[test]

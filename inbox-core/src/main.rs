@@ -597,6 +597,11 @@ mod tests {
                 .unwrap(),
             "move merge-wait human_action"
         );
+        assert_eq!(
+            extra("lane human_action live yes no no no no other yes no no 0 no no 0 0 no 100000 30 research no no no")
+                .unwrap(),
+            "move waiting human_decision"
+        );
         // 引数の数: 20 と 24 だけ
         for n in [21, 22, 23, 25] {
             let extra_args = ["implement", "no", "no", "no", "no"];
