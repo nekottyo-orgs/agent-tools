@@ -35,7 +35,7 @@ pub enum Verdict {
     MergeWait,
 }
 
-fn wrap(v: replace::Verdict) -> Verdict {
+pub(super) fn wrap(v: replace::Verdict) -> Verdict {
     match v {
         replace::Verdict::Stay => Verdict::Stay,
         replace::Verdict::Replace => Verdict::Replace,
