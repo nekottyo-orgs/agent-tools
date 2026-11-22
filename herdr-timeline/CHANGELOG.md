@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.1.5](https://github.com/nekottyo/agent-tools/compare/herdr-timeline/v0.1.4...herdr-timeline/v0.1.5) - 2026-11-22
+
+### Changes
+- fix(herdr-timeline): 不正な pane 一覧を警告する by @nekottyo in https://github.com/nekottyo/agent-tools/pull/72
+- fix(herdr-timeline): watcher の実行コマンドを判定する by @nekottyo in https://github.com/nekottyo/agent-tools/pull/73
+- fix(herdr-timeline): 一覧を取得したソケットへ Enter の移動を送る by @nekottyo in https://github.com/nekottyo/agent-tools/pull/77
+- perf(herdr-timeline): 一覧の transcript 走査を共有する by @nekottyo in https://github.com/nekottyo/agent-tools/pull/78
+- fix(herdr-timeline): 完了済み pane を一覧集計から外す by @nekottyo in https://github.com/nekottyo/agent-tools/pull/80
+- refactor(herdr-timeline): ワークスペースごとの状態を一度だけ集計する by @nekottyo in https://github.com/nekottyo/agent-tools/pull/83
+
 ## [v0.1.4](https://github.com/nekottyo/agent-tools/compare/herdr-timeline/v0.1.3...herdr-timeline/v0.1.4) - 2026-11-21
 
 ### Changes
