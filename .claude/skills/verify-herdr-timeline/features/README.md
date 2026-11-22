@@ -8,4 +8,4 @@
 | [pane 一覧](pane-list.md) | `herdr-timeline --json` |
 | [接続と履歴の診断](diagnostics.md) | `herdr-timeline --json` と `--timeline PANE_ID` |
 
-公開版と候補版で上の 3 経路を通した。各操作と結果は証跡ディレクトリの `commands.jsonl` に対応する。TUI での選択・移動や Claude Code の履歴は初回の検証範囲外。
+公開版と候補版で上の 3 経路を通した。各操作と結果は証跡ディレクトリの `runner/commands.jsonl` に対応する。TUI での選択・移動や Claude Code の履歴は初回の検証範囲外。
