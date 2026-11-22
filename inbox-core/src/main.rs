@@ -235,15 +235,11 @@ fn run_lane(a: &[String]) -> Option<String> {
         exhausted: yn(&a[17])?,
     };
     let (now, cap) = (num(&a[18])?, num(&a[19])?);
-    // kind を渡さない従来形は end_marker を通さず、出力を 1 バイトも変えない
+    // kind を渡さない従来形は終わりの印を判定せず、従来の判定をそのまま整形する
     if a.len() == 20 {
-        return Some(match replace::decide(from, f, s, now, cap) {
-            replace::Verdict::Stay => "none".into(),
-            replace::Verdict::Replace => "replace".into(),
-            replace::Verdict::Move(m) => {
-                format!("move {} {}", rule_name(m.rule), lane_name(m.dest))
-            }
-        });
+        return Some(render_lane(end_marker::wrap(replace::decide(
+            from, f, s, now, cap,
+        ))));
     }
     let kind = match a[20].as_str() {
         "unset" => end_marker::Kind::Unset,
@@ -259,7 +255,11 @@ fn run_lane(a: &[String]) -> Option<String> {
         ci_green: yn(&a[22])?,
         other_org: yn(&a[23])?,
     };
-    Some(match end_marker::judge(from, f, s, now, cap, k) {
+    Some(render_lane(end_marker::judge(from, f, s, now, cap, k)))
+}
+
+fn render_lane(verdict: end_marker::Verdict) -> String {
+    match verdict {
         end_marker::Verdict::Stay => "none".into(),
         end_marker::Verdict::Replace => "replace".into(),
         end_marker::Verdict::Move(m) => {
@@ -267,7 +267,7 @@ fn run_lane(a: &[String]) -> Option<String> {
         }
         end_marker::Verdict::EndMarker => "move end-marker done".into(),
         end_marker::Verdict::MergeWait => "move merge-wait human_action".into(),
-    })
+    }
 }
 
 fn run_stalled(a: &[String]) -> Option<String> {
