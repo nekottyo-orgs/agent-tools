@@ -1,0 +1,32 @@
+name: tagpr
+description: Update the release PR and tag for one tool
+inputs:
+  client-id:
+    description: GitHub App client ID
+    required: true
+  private-key:
+    description: GitHub App private key
+    required: true
+  config:
+    description: Path to the tagpr configuration
+    required: true
+runs:
+  using: composite
+  steps:
+    # app-id は非推奨 (deprecationMessage: "Use 'client-id' instead.") なので client-id を使う
+    - uses: actions/create-github-app-token@v3.3.0
+      id: app-token
+      with:
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+        permission-contents: write
+        permission-pull-requests: write
+        permission-issues: read
+    - uses: actions/checkout@v6.1.0
+      with:
+        persist-credentials: false
+    - uses: Songmu/tagpr@v1.22.0
+      with:
+        config: ${{ inputs.config }}
+      env:
+        GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
