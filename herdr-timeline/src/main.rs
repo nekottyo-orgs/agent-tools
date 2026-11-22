@@ -22,7 +22,7 @@ mod watchers;
 
 use data::{
     canon, detail, gather, read_msgs, run_herdr, summary, transcript_mtime, Briefs, Detail, Env,
-    PaneRow, Snapshot, TranscriptPaths, Transcripts,
+    PaneRow, Snapshot, TabTarget, TranscriptPaths, Transcripts,
 };
 use std::collections::HashMap;
 use std::io::Write;
@@ -227,7 +227,7 @@ impl Seen {
                         None // 畳んだ行は経過を出さないので stat もしない
                     },
                     approx: working && turn.is_none(),
-                    tab_id: p.tab_id.clone(),
+                    tab_target: p.tab_target.clone(),
                     ws: p.ws.clone(),
                 }
             })
@@ -362,8 +362,8 @@ impl KeyParser {
     }
 }
 
-fn focus_tab(env: &Env, tab: &str) -> String {
-    match run_herdr(env, &["tab", "focus", tab], None) {
+fn focus_tab(env: &Env, target: &TabTarget) -> String {
+    match run_herdr(env, &["tab", "focus", &target.id], target.socket.as_deref()) {
         Ok(_) => String::new(),
         Err(e) => format!("移動できない ({e})"),
     }
@@ -551,16 +551,13 @@ fn interactive(env: &Env, o: &Opts, color: bool) {
             for k in parser.feed(&buf[..n as usize]) {
                 match k {
                     "q" | "esc" => return,
-                    "enter" => {
-                        // tab_id が空の行 (別 session) は今の session から移れないので、移らずに理由を出す
-                        match sel.as_ref().and_then(|s| prev.iter().find(|x| &x.0 == s)) {
-                            Some(x) if x.1.is_empty() => {
-                                notice = "別 session の行の tab には移れない".to_string()
-                            }
-                            Some(x) => notice = focus_tab(env, &x.1),
-                            None => {}
+                    "enter" => match sel.as_ref().and_then(|s| prev.iter().find(|x| &x.0 == s)) {
+                        Some((_, None)) => {
+                            notice = "別 session の行の tab には移れない".to_string()
                         }
-                    }
+                        Some((_, Some(target))) => notice = focus_tab(env, target),
+                        None => {}
+                    },
                     "up" | "down" => {
                         if let Some(i) = sel.as_ref().and_then(|s| ids.iter().position(|x| x == s))
                         {
@@ -650,7 +647,7 @@ mod tests {
             kind: None,
             sid: None,
             codex: false,
-            tab_id: None,
+            tab_target: None,
             ws: (String::new(), String::new()),
             socket: socket.into(),
         }
@@ -819,7 +816,7 @@ mod tests {
             work: String::new(),
             since: None,
             approx: false,
-            tab_id: None,
+            tab_target: None,
             ws: (String::new(), String::new()),
         }
     }

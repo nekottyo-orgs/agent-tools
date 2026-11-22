@@ -693,4 +693,27 @@ theorem fold_append {α β : Type} (step : α → β → α) (initial : α) (pre
     (prefixLines ++ suffix).foldl step initial = suffix.foldl step (prefixLines.foldl step initial) :=
   List.foldl_append
 
+/-! ## Enter での tab 移動 -/
+
+/-- 一覧取得に使った socket の同一性 (正規化済み) と、実際に渡すパスを分ける。
+    `none` のパスは Herdr の暗黙指定。`named` は複数 session の一覧。 -/
+def tabTarget (named : Bool) (own listed : Str) (path : Option Str) (tab : Str) :
+    Option (Option Str × Str) :=
+  if (named && listed != own) || tab.isEmpty then none else some (path, tab)
+
+theorem tabTarget_uses_listed_path (named : Bool) (own listed : Str) (path dest : Option Str) (tab id : Str)
+    (h : tabTarget named own listed path tab = some (dest, id)) : dest = path ∧ id = tab := by
+  unfold tabTarget at h
+  split at h <;> simp_all
+
+theorem tabTarget_rejects_foreign (own listed : Str) (path : Option Str) (tab : Str) (h : listed ≠ own) :
+    tabTarget true own listed path tab = none := by
+  simp [tabTarget, h]
+
+example : tabTarget false ['s'] ['a'] (some ['p']) ['t'] = some (some ['p'], ['t']) := rfl
+example : tabTarget true ['s'] ['s'] (some ['s']) ['t'] = some (some ['s'], ['t']) := rfl
+example : tabTarget true ['s'] ['a'] (some ['a']) ['t'] = none := rfl
+example : tabTarget false ['s'] ['s'] none ['t'] = some (none, ['t']) := rfl
+example : tabTarget false ['s'] ['s'] none [] = none := rfl
+
 end HerdrTimeline

@@ -180,6 +180,12 @@ fn sessions(env: &Env) -> Vec<(String, Option<PathBuf>)> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabTarget {
+    pub socket: Option<PathBuf>,
+    pub id: String,
+}
+
 pub struct PaneRow {
     pub key: String,
     pub pane: String,
@@ -192,7 +198,7 @@ pub struct PaneRow {
     pub kind: Option<PaneKind>,
     pub sid: Option<String>,
     pub codex: bool,
-    pub tab_id: Option<String>,
+    pub tab_target: Option<TabTarget>,
     pub ws: (String, String),
     pub socket: String,
 }
@@ -349,7 +355,8 @@ pub fn gather(env: &Env) -> Snapshot {
             if pane.is_empty() {
                 continue;
             }
-            let tab = tabs.get(&s(p, "tab_id"));
+            let tab_id = s(p, "tab_id");
+            let tab = tabs.get(&tab_id);
             // pane の label は同じ tab に pane が複数あるときだけ足す (単独なら tab の label と同じ)
             let mut parts = vec![
                 ws.get(&s(p, "workspace_id")).cloned().unwrap_or_default(),
@@ -410,7 +417,10 @@ pub fn gather(env: &Env) -> Snapshot {
                 sid,
                 codex,
                 // 別 session の tab は今の画面に無いので移動の対象にしない
-                tab_id: Some(s(p, "tab_id")).filter(|t| !t.is_empty() && !foreign),
+                tab_target: (!foreign && !tab_id.is_empty()).then(|| TabTarget {
+                    socket: sock.clone(),
+                    id: tab_id,
+                }),
                 ws: (name.clone(), s(p, "workspace_id")),
                 socket: socket.clone(),
                 pane,
@@ -2030,7 +2040,7 @@ mod tests {
             kind: None,
             sid: Some("sess1".into()),
             codex: false,
-            tab_id: None,
+            tab_target: None,
             ws: (String::new(), String::new()),
             socket: "/s/a".into(),
         };
