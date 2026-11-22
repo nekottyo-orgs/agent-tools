@@ -1484,13 +1484,12 @@ const WATCH_ENV: [&str; 4] = [
     "HERDR_TIMELINE_PS_BIN",
 ];
 
-/// stub ps。-p の問い合わせには ps-pid、-axo には ps-all の中身を返す (SELF は呼び出し元 = herdr-timeline の pid に置換)
+/// stub ps。-p は PID ごとの応答、-axo は ps-all の中身を返す (SELF は herdr-timeline の PID に置換)
 fn watch_fx(name: &str) -> (Fx, Vec<(&'static str, String)>) {
     use std::os::unix::fs::PermissionsExt;
     let fx = Fx::new(name);
-    fx.write("ps/ps.sh", "#!/bin/sh\nd=$(dirname \"$0\")\ncase \"$1\" in\n  -o) cat \"$d/ps-pid\" ;;\n  -axo) sed \"s/SELF/$PPID/\" \"$d/ps-all\" ;;\nesac\n");
+    fx.write("ps/ps.sh", "#!/bin/sh\nd=$(dirname \"$0\")\ncase \"$1\" in\n  -o) [ -f \"$d/ps-pid-$4\" ] && cat \"$d/ps-pid-$4\" ;;\n  -axo) sed \"s/SELF/$PPID/\" \"$d/ps-all\" ;;\nesac\n");
     fs::set_permissions(fx.path("ps/ps.sh"), fs::Permissions::from_mode(0o755)).unwrap();
-    fx.write("ps/ps-pid", "");
     fx.write("ps/ps-all", "");
     let env = vec![
         (WATCH_ENV[0], fx.path("st/turns").display().to_string()),
@@ -1536,23 +1535,50 @@ fn watchers_are_four_in_fixed_order_with_env_state_dir() {
 fn watchers_running_follows_lock_pid_and_ps() {
     let (fx, env) = watch_fx("w-lock");
     fx.write("st/pr/resident.lock/pid", "4242\n");
-    fx.write("ps/ps-pid", "bash /x/watch-my-pr-reviews.sh --loop\n");
+    fx.write(
+        "ps/ps-pid-4242",
+        "S+ /bin/bash /x/watch-my-pr-reviews.sh --loop\n",
+    );
     let w = watchers_of(&fx, &env);
     assert_eq!(w[1]["running"], true);
     assert_eq!(
         w[3]["running"], false,
         "merged の lock は別 (pid ファイル無し)"
     );
-    // ps が別 script を返す
-    fx.write("ps/ps-pid", "vim notes.md\n");
+    for line in [
+        "S bash -e /x/watch-my-pr-reviews.sh\n",
+        "S bash -o pipefail /x/watch-my-pr-reviews.sh\n",
+    ] {
+        fx.write("ps/ps-pid-4242", line);
+        assert_eq!(watchers_of(&fx, &env)[1]["running"], true, "{line:?}");
+    }
+    for line in [
+        "S vim /x/watch-my-pr-reviews.sh\n",
+        "S bash /x/watch-my-pr-reviews.sh.bak\n",
+        "S bash /x/other.sh /x/watch-my-pr-reviews.sh\n",
+        "S bash -o pipefail /x/other.sh /x/watch-my-pr-reviews.sh\n",
+        "S bash -c /x/watch-my-pr-reviews.sh\n",
+        "S bash -ec /x/watch-my-pr-reviews.sh\n",
+        "S bash -s -- /x/watch-my-pr-reviews.sh\n",
+        "S bash -es /x/watch-my-pr-reviews.sh\n",
+        // ps では空白入りのパスと、空白で区切った複数の引数を区別できない
+        "S bash /x/with space/watch-my-pr-reviews.sh\n",
+        "T bash /x/watch-my-pr-reviews.sh\n",
+        "Z /x/watch-my-pr-reviews.sh\n",
+    ] {
+        fx.write("ps/ps-pid-4242", line);
+        assert_eq!(watchers_of(&fx, &env)[1]["running"], false, "{line:?}");
+    }
+    // PID が終了済みなら ps の問い合わせは失敗する
+    fx.write("ps/ps-pid-4242", "S /x/watch-my-pr-reviews.sh\n");
+    fx.write("st/pr/resident.lock/pid", "4243\n");
     assert_eq!(watchers_of(&fx, &env)[1]["running"], false);
-    // pid が数字でない
     fx.write("st/pr/resident.lock/pid", "abc\n");
-    fx.write("ps/ps-pid", "watch-my-pr-reviews.sh\n");
+    fx.write("ps/ps-pid-abc", "S /x/watch-my-pr-reviews.sh\n");
     assert_eq!(watchers_of(&fx, &env)[1]["running"], false);
     // merged は merged-resident.lock を見る
     fx.write("st/pr/merged-resident.lock/pid", "7\n");
-    fx.write("ps/ps-pid", "watch-merged-prs.sh\n");
+    fx.write("ps/ps-pid-7", "S /x/watch-merged-prs.sh\n");
     assert_eq!(watchers_of(&fx, &env)[3]["running"], true);
 }
 
@@ -1561,20 +1587,28 @@ fn watchers_pane_turns_uses_full_ps_listing_without_itself() {
     let (fx, env) = watch_fx("w-turns");
     fx.write(
         "ps/ps-all",
-        "SELF herdr-timeline --json watch-pane-turns.sh\n 1 vim a\n",
+        concat!(
+            "SELF S /x/watch-pane-turns.sh\n",
+            "  1 S vim /x/watch-pane-turns.sh\n",
+            "  2 S /x/watch-pane-turns.sh.bak\n",
+            "  3 S bash /x/other.sh /x/watch-pane-turns.sh\n",
+            "  4 T /x/watch-pane-turns.sh\n",
+        ),
     );
     assert_eq!(
         watchers_of(&fx, &env)[0]["running"],
         false,
-        "自分の行は数えない"
+        "自分自身と、対象の watcher が稼働していない行は数えない"
     );
-    fx.write("ps/ps-all", "1 vim a\n22 bash /x/watch-pane-turns.sh\n");
+    fx.write("ps/ps-all", " 22 S /x/watch-pane-turns.sh\n");
     assert_eq!(watchers_of(&fx, &env)[0]["running"], true);
     // 自分でない pid の行は、path に herdr-timeline を含んでも数える
     fx.write(
         "ps/ps-all",
-        "SELF herdr-timeline --json\n33 bash /x/herdr-timeline/scripts/watch-pane-turns.sh\n",
+        "SELF S herdr-timeline --json\n33 S bash -- /x/herdr-timeline/scripts/watch-pane-turns.sh\n",
     );
+    assert_eq!(watchers_of(&fx, &env)[0]["running"], true);
+    fx.write("ps/ps-all", " 22 S bash -eux /x/watch-pane-turns.sh\n");
     assert_eq!(watchers_of(&fx, &env)[0]["running"], true);
 }
 

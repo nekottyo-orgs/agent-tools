@@ -1,5 +1,4 @@
 // --json の watchers。常駐 watcher 4 本の稼働と state_dir の最終更新を返す。
-// 稼働の判定は resident-lock.sh の resident_proc_is と同じ (pid ファイルを読み、ps の command に script 名を含むか)。
 
 use serde_json::{json, Value};
 use std::path::Path;
@@ -62,10 +61,47 @@ pub fn list(panes: &[Value]) -> Vec<Value> {
 }
 
 fn ps_out(ps: &str, args: &[&str]) -> Option<String> {
-    let o = Command::new(ps).args(args).output().ok()?;
+    let o = Command::new(ps).args(args).arg("-ww").output().ok()?;
     o.status
         .success()
         .then(|| String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+fn bash_script_arg<'a>(mut args: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    while let Some(arg) = args.next() {
+        match arg {
+            "--" => return args.next(),
+            "-o" | "+o" | "-O" | "+O" => {
+                args.next()?;
+            }
+            // -c や -s の後ろに現れる引数をスクリプトと取り違えないよう、対応するフラグだけを読み飛ばす。
+            _ => match arg.strip_prefix(['-', '+']) {
+                Some(flags)
+                    if !flags.is_empty()
+                        && flags
+                            .bytes()
+                            .all(|flag| b"abBCeEfhHkmpPTuvx".contains(&flag)) => {}
+                Some(_) => return None,
+                None => return Some(arg),
+            },
+        }
+    }
+    None
+}
+
+fn watcher_process<'a>(mut fields: impl Iterator<Item = &'a str>, script: &str) -> bool {
+    let Some(state) = fields.next() else {
+        return false;
+    };
+    if state.starts_with(['T', 't', 'Z', 'X']) {
+        return false;
+    }
+    // shortcut: ps は引数の境界を残さないため空白を含むパスは対象外。必要になったら argv を直接取得する。
+    let basename = |arg: &'a str| arg.rsplit('/').next().unwrap_or(arg);
+    match fields.next().map(basename) {
+        Some("bash") => bash_script_arg(fields).map(basename) == Some(script),
+        command => command == Some(script),
+    }
 }
 
 fn pid_running(ps: &str, pidfile: &Path, script: &str) -> bool {
@@ -75,17 +111,18 @@ fn pid_running(ps: &str, pidfile: &Path, script: &str) -> bool {
     let pid = s.trim();
     !pid.is_empty()
         && pid.bytes().all(|b| b.is_ascii_digit())
-        && ps_out(ps, &["-o", "command=", "-p", pid]).is_some_and(|o| o.contains(script))
+        && ps_out(ps, &["-o", "stat=,command=", "-p", pid]).is_some_and(|o| {
+            o.lines()
+                .any(|line| watcher_process(line.split_ascii_whitespace(), script))
+        })
 }
 
 fn any_running(ps: &str, script: &str) -> bool {
-    // 自プロセスの行 (引数に script 名が入りうる) だけを pid で除く。path 名では除かない
     let me = std::process::id().to_string();
-    ps_out(ps, &["-axo", "pid=,command="]).is_some_and(|o| {
-        o.lines().any(|l| {
-            let l = l.trim_start();
-            let (pid, cmd) = l.split_once(' ').unwrap_or((l, ""));
-            pid != me && cmd.contains(script)
+    ps_out(ps, &["-axo", "pid=,stat=,command="]).is_some_and(|o| {
+        o.lines().any(|line| {
+            let mut fields = line.split_ascii_whitespace();
+            fields.next() != Some(me.as_str()) && watcher_process(fields, script)
         })
     })
 }

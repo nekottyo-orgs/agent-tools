@@ -91,8 +91,10 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 - `panes`: pane の配列。常駐・dispatch の pane も含め、画面で隠すかどうかは `hidden` で示す
 - `warnings`: 警告の配列。一覧取得 (pane、workspace、tab) の失敗や、`panes` が配列でない場合、有効な `pane_id` のない要素がある場合に診断を含む。有効な ID のある行は引き続き表示し、`panes: []` は正常な空一覧として扱う
 - `watchers`: 常駐 watcher 4 本 (`watch-pane-turns` / `watch-my-pr-reviews` / `watch-other-pr-reviews` / `watch-merged-prs`、この順) の配列。各要素は `name`、`running`、`pane`、`state_dir`、`last_activity`。`--once` の画面には出さない
-  - `running`: lock を持つ 3 本は `<state_dir>/resident.lock/pid` (merged は `merged-resident.lock/pid`) の pid が数字で、`ps -o command= -p <pid>` に script 名を含めば true。pid ファイルが無い・空・数字でない・ps の失敗は false
-  - `watch-pane-turns` は lock が無いので `ps -axo command=` に `watch-pane-turns.sh` を含む行があれば true (herdr-timeline 自身の行は除く)。ps は `HERDR_TIMELINE_PS_BIN` で差し替えられる
+  - `running`: watcher のスクリプトを直接実行しているか、`bash` のスクリプト引数として実行していれば true。比較するのはその位置のファイル名だけで、名前は完全一致とする。停止中のプロセスやゾンビは除く
+  - Bash では `bash script`、`bash -- script`、`bash -e script`、`bash -eux script`、`bash -o pipefail script` などを判定する。スクリプトの前で読み飛ばすのは `abBCeEfhHkmpPTuvx` の短いフラグ (`-` / `+`、連結可) と、名前を 1 語取る `-o` / `+o` / `-O` / `+O`。`-c` (コマンド文字列) や `-s` (標準入力) を含む起動は対象外
+  - `ps` は引数を空白つなぎで返す。たとえば `bash /a b/watch-pane-turns.sh` は、空白を含む 1 つのスクリプトパスと、`/a` に `b/watch-pane-turns.sh` を渡した起動を区別できない。判定は空白を含まない実行パスを前提とする
+  - lock を持つ 3 本は `<state_dir>/resident.lock/pid` (merged は `merged-resident.lock/pid`) の PID を `ps` で照合する。PID ファイルが無い・空・数字でない場合や `ps` が失敗した場合は false。`watch-pane-turns` は lock が無いため、`ps` のプロセス一覧で照合する (herdr-timeline 自身の行は除く)。`ps` は `HERDR_TIMELINE_PS_BIN` で差し替えられる
   - `pane`: label が `name` と完全一致する pane の `pane_id` (複数なら先頭、無ければ null)
   - `state_dir`: 各 watcher の env (`WATCH_PANE_TURNS_STATE_DIR` / `WATCH_PR_REVIEWS_STATE_DIR` / `WATCH_REVIEW_REQUESTS_STATE_DIR`) か、既定の `~/.agents/state/…` を展開した値。`last_activity` はその直下のエントリと、直下のディレクトリの 1 段下のエントリ (lock ディレクトリを除く、2 階層まで) の mtime の最大 (epoch 秒)。空の env は既定扱い。無い・空なら null
 
