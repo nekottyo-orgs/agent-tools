@@ -3,7 +3,7 @@
 use crate::core::{group, total, Event, Kind, Status};
 use crate::data::{Detail, Goal, Run, RunWindow, TabTarget};
 use crate::text::{age_text, clip, clip_head, fit, fmt_stamp, pad, tl_body, width_of, wrap};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 const NAME_MAX: usize = 44;
 const WORK_MIN: usize = 8; // 要約に最低限必要な幅。足りない行は要約を省く
@@ -261,46 +261,32 @@ pub fn step_line(d: &Goal, width: usize) -> Option<String> {
     Some(clip(&line, width))
 }
 
-/// tally の行を薄く塗り、tally の語のうち記号だけを状態の色に戻す。
-/// wrap は空白で折るので tally は常に全行の末尾 W 語になる。語の位置で決めるので、名前が折り返されて同じ文字列が出ても塗らない
-fn tint_tally(rows: &[&Row], parts: &[String], color: bool) -> Vec<String> {
-    let total: usize = parts.iter().map(|p| p.split_whitespace().count()).sum();
-    let start = total.saturating_sub(tally(rows).split_whitespace().count());
-    let mut idx = 0;
-    parts
-        .iter()
-        .map(|part| {
-            let toks: Vec<String> = part
-                .split(' ')
-                .map(|t| {
-                    if t.is_empty() {
-                        return t.to_string();
-                    }
-                    idx += 1;
-                    let k = ["idle", "unknown"]
-                        .into_iter()
-                        .find(|k| symbol(k) == t && rows.iter().any(|x| x.status == *k));
-                    match k {
-                        Some(k) if color && idx > start => {
-                            format!("\x1b[0m{}\x1b[2m", paint(true, symbol(k), status_style(k)))
-                        }
-                        _ => t.to_string(),
-                    }
-                })
-                .collect();
-            paint(color, &toks.join(" "), "2")
-        })
-        .collect()
-}
-
-fn tally(rows: &[&Row]) -> String {
-    let c = |s: &str| rows.iter().filter(|x| x.status == s).count();
-    ["idle", "unknown"]
-        .iter()
-        .filter(|k| c(k) > 0)
-        .map(|k| format!("{} {}", symbol(k), c(k)))
+fn tally_lines(name: &str, counts: [usize; 2], width: usize, color: bool) -> Vec<String> {
+    let shown = ["idle", "unknown"]
+        .into_iter()
+        .zip(counts)
+        .filter(|&(_, n)| n > 0);
+    let tally = shown
+        .clone()
+        .map(|(status, n)| format!("{} {n}", symbol(status)))
         .collect::<Vec<_>>()
-        .join("  ")
+        .join("  ");
+    let mut parts = wrap(&format!("{name}  {tally}"), width, width);
+    if color {
+        // 折り返し後も集計の記号は名前より後ろにあるので、末尾から探す。
+        let mut statuses = shown.rev().peekable();
+        for part in parts.iter_mut().rev() {
+            while let Some(&(status, _)) = statuses.peek() {
+                let icon = symbol(status);
+                let Some(i) = part.rfind(icon) else { break };
+                let colored = paint(true, icon, status_style(status));
+                part.replace_range(i..i + icon.len(), &format!("\x1b[0m{colored}\x1b[2m"));
+                statuses.next();
+            }
+            *part = paint(true, part, "2");
+        }
+    }
+    parts
 }
 
 /// 選択する key。sel が order に無ければ、前回の表示順で近い順 (右隣、左隣、右 2 …) に残っている行、無ければ先頭
@@ -522,32 +508,24 @@ pub fn layout(v: &View) -> (Vec<String>, Order, Option<String>) {
     for x in &working {
         pane_block(x, 2, false, &mut blocks);
     }
-    let mut ws: Vec<((String, String), Vec<&Row>)> = Vec::new();
-    for x in v
-        .rows
-        .iter()
-        .filter(|x| matches!(x.status.as_str(), "idle" | "unknown"))
-    {
-        match ws.iter_mut().find(|(k, _)| *k == x.ws) {
-            Some((_, rs)) => rs.push(x),
-            None => ws.push((x.ws.clone(), vec![x])),
-        }
+    let mut ws = BTreeMap::new();
+    for x in v.rows {
+        let i = match x.status.as_str() {
+            "idle" => 0,
+            "unknown" => 1,
+            _ => continue,
+        };
+        ws.entry(&x.ws).or_insert([0; 2])[i] += 1;
     }
-    ws.sort_by(|a, b| a.0.cmp(&b.0));
     if !ws.is_empty() {
         blocks.push(vec![head("■ idle / unknown", "1")]);
-        for (k, rs) in &ws {
+        for (k, counts) in ws {
             let name = v
                 .ws_names
                 .get(k)
                 .cloned()
                 .unwrap_or_else(|| format!("workspace {}", k.1));
-            let parts = wrap(
-                &format!("{name}  {}", tally(rs)),
-                (inner - 1).max(2) as usize,
-                (inner - 1).max(2) as usize,
-            );
-            let b = tint_tally(rs, &parts, v.color)
+            let b = tally_lines(&name, counts, (inner - 1).max(2) as usize, v.color)
                 .into_iter()
                 .enumerate()
                 .map(|(n, l)| format!("{}{l}", if n == 0 { "  " } else { "    " }))
@@ -896,69 +874,55 @@ mod tests {
     }
 
     #[test]
-    fn tally_uses_icons_not_words() {
-        let rows = [
-            row("b", "idle", "p2", None),
-            row("c", "idle", "p3", None),
-            row("d", "unknown", "p4", None),
-        ];
-        let refs: Vec<&Row> = rows.iter().collect();
-        assert_eq!(tally(&refs), "○ 2  · 1", "文字でなく記号と件数を出すはず");
-        let tinted = tint_tally(&refs, &["ws  ○ 2  · 1".to_string()], true).concat();
-        assert!(
-            tinted.contains("\x1b[32m○\x1b[0m") && tinted.contains("\x1b[2m·\x1b[0m"),
-            "色ありなら記号が状態の色になるはず: {tinted:?}"
+    fn tally_preserves_counts_and_colors_through_wrapping() {
+        let name = "○ · x";
+        assert_eq!(
+            tally_lines(name, [2, 1], 30, false),
+            ["○ · x  ○ 2  · 1"],
+            "色なしでも記号と件数が出るはず"
         );
-        assert!(
-            !tint_tally(&refs, &["ws  ○ 2  · 1".to_string()], false)
+        assert_eq!(
+            tally_lines(name, [2, 1], 5, true),
+            [
+                "\x1b[2m○ · x\x1b[0m",
+                "\x1b[2m\x1b[0m\x1b[32m○\x1b[0m\x1b[2m 2\x1b[0m",
+                "\x1b[2m\x1b[0m\x1b[2m·\x1b[0m\x1b[2m 1\x1b[0m",
+            ],
+            "折り返しても集計の記号だけに状態色が付くはず"
+        );
+        assert_eq!(
+            tally_lines(name, [120, 1], 2, true)
                 .concat()
-                .contains('\x1b'),
-            "色なしなら制御文字を出さないはず"
+                .matches("\x1b[32m○\x1b[0m")
+                .count(),
+            1,
+            "件数の数字が折り返しても idle の記号に色が付くはず"
         );
     }
 
     #[test]
-    fn tint_tally_skips_same_text_in_workspace_name() {
-        let rows = [
-            row("a", "idle", "p1", None),
-            row("b", "unknown", "p2", None),
-        ];
-        let refs: Vec<&Row> = rows.iter().collect();
-        let t = tint_tally(&refs, &["ws ○ 1 · 10  ○ 1  · 1".to_string()], true).concat();
+    fn tallies_follow_workspace_keys() {
+        let mut later = row("a", "unknown", "p1", None);
+        later.ws = ("b".into(), "1".into());
+        let mut earlier = row("b", "idle", "p2", None);
+        earlier.ws = ("a".into(), "2".into());
+        let rows = [later, earlier];
+        let lines = layout(&View {
+            rows: &rows,
+            runs: &[],
+            warn: &[],
+            ws_names: &HashMap::new(),
+            width: 40,
+            color: false,
+            select: None,
+            height: None,
+            now: 10,
+        })
+        .0;
         assert!(
-            t.starts_with("\x1b[2mws ○ 1 · 10  "),
-            "名前側は塗らないはず: {t:?}"
+            lines.ends_with(&["  workspace 2  ○ 1".into(), "  workspace 1  · 1".into()]),
+            "pane の入力順にかかわらず workspace のキー順に並ぶはず: {lines:?}"
         );
-        assert!(
-            t.contains("\x1b[32m○\x1b[0m"),
-            "末尾の tally は塗るはず: {t:?}"
-        );
-        assert_eq!(
-            t.matches("\x1b[32m").count(),
-            1,
-            "塗るのは 1 か所のはず: {t:?}"
-        );
-    }
-
-    #[test]
-    fn tint_tally_skips_wrapped_name_continuation() {
-        let rows = [
-            row("a", "idle", "p1", None),
-            row("b", "unknown", "p2", None),
-        ];
-        let refs: Vec<&Row> = rows.iter().collect();
-        let parts = ["ws ○ 1".to_string(), "foo ○ 1  ○ 1  · 1".to_string()];
-        let t = tint_tally(&refs, &parts, true);
-        assert!(
-            t[0].starts_with("\x1b[2mws ○ 1") && t[1].starts_with("\x1b[2mfoo ○ 1  "),
-            "名前側の記号は塗らないはず: {t:?}"
-        );
-        assert_eq!(
-            t.concat().matches("\x1b[32m").count(),
-            1,
-            "緑で塗るのは tally の ○ だけのはず: {t:?}"
-        );
-        assert!(t[1].contains("\x1b[0m"), "tally の · も塗るはず: {t:?}");
     }
 
     #[test]
