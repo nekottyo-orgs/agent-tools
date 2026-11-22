@@ -115,7 +115,17 @@ def main():
         }
 
         def command(*argv, check=True):
-            result = subprocess.run(argv, env=env, cwd=project, text=True, capture_output=True, timeout=40)
+            try:
+                result = subprocess.run(argv, env=env, cwd=project, text=True, capture_output=True, timeout=40)
+            except subprocess.TimeoutExpired as error:
+                record({"argv": argv, "exit": None, "error": "timeout", "timeout": error.timeout,
+                        "stdout": (error.stdout or b"").decode("utf-8", errors="replace"),
+                        "stderr": (error.stderr or b"").decode("utf-8", errors="replace")})
+                raise
+            except OSError as error:
+                record({"argv": argv, "exit": None, "error": "launch_failed", "detail": str(error),
+                        "stdout": "", "stderr": ""})
+                raise
             record({"argv": argv, "exit": result.returncode, "stdout": result.stdout, "stderr": result.stderr})
             if check:
                 require(result.returncode == 0, f"{shlex.join(argv)}: exit {result.returncode}")
@@ -159,10 +169,15 @@ def main():
                 "timeout": 10, "type": "command",
             }]}]}, "Unexpected Codex hook registry")
             with (evidence / "herdr.log").open("w") as log:
-                server = subprocess.Popen(
-                    [herdr, "server"], env=env, cwd=project, stdout=log, stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                )
+                try:
+                    server = subprocess.Popen(
+                        [herdr, "server"], env=env, cwd=project, stdout=log, stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                except OSError as error:
+                    record({"argv": [herdr, "server"], "exit": None, "error": "launch_failed",
+                            "detail": str(error), "stdout": "", "stderr": ""})
+                    raise
             wait_for(socket.is_socket, "Isolated Herdr socket is unavailable")
             native_empty = json.loads(command(herdr, "pane", "list").stdout)["result"]["panes"]
             empty = snapshot()
@@ -181,7 +196,12 @@ def main():
             def screen():
                 return command(herdr, "pane", "read", pane, "--source", "visible", "--lines", "40").stdout
 
-            visible = screen()
+            def approval_or_ready():
+                visible = screen()
+                if "Hooks need review" in visible or "Ask Codex to do anything" in visible:
+                    return visible
+
+            visible = wait_for(approval_or_ready, "Codex showed neither the hook review nor the ready prompt")
             if "Hooks need review" in visible:
                 require(before["agent"] == "codex" and not before.get("agent_session"),
                         "Expected a Codex pane with no native ID before hook approval")
@@ -221,7 +241,7 @@ def main():
                              and [part.get("text") for part in row["payload"]["item"]["content"]] == [prompt]), None)
 
             user_message = wait_for(completed, "Prompt not found in Codex rollout")
-            require(model.received, "Local model did not receive prompt")
+            wait_for(lambda: model.received, "Local model did not receive prompt")
             populated = snapshot()
             require(not populated["warnings"] and any(row["pane_id"] == pane for row in populated["panes"]),
                     "Timeline cannot enumerate the target pane")

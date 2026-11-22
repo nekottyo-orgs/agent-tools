@@ -23,13 +23,6 @@ gh release view "$release_tag" --repo nekottyo/agent-tools --json tagName,url,as
 chmod +x "$release_dir/herdr-timeline-aarch64-apple-darwin"
 ```
 
-候補版は確認したいコミットの checkout でビルドする。作業ツリーに未コミットの製品コードがあればその差分も記録する。
-
-```bash
-candidate_commit=$(git rev-parse HEAD)
-cargo build --locked -p herdr-timeline
-```
-
 補助スクリプトが毎回、一時 HOME、Codex ディレクトリ、Herdr ソケット、空の作業ディレクトリを作る。実 Herdr の `server` を起動し、そのソケットで `pane list` が成功した時点で起動完了。モデル境界だけを認証不要の loopback HTTP に置き換える。共有 socket・共有 Codex backend・普段の hook 設定を使う試走は中止する。
 
 ## 読み取り点検
@@ -60,9 +53,22 @@ run_id=$(uuidgen)
   "$release_dir/herdr-timeline-aarch64-apple-darwin" "$evidence_root/$run_id-release" \
   --release "$release_tag" "$release_dir/herdr-timeline-aarch64-apple-darwin.sha256"
 cp "$release_dir/release.json" "$evidence_root/$run_id-release/release.json"
-run_id=$(uuidgen)
-.claude/skills/verify-herdr-timeline/scripts/codex-history.py \
-  target/debug/herdr-timeline "$evidence_root/$run_id-candidate" --commit "$candidate_commit"
+```
+
+候補版は確認したいコミットのクリーンな checkout で実行する。毎回、新しい target ディレクトリにビルドし、成功して checkout の SHA が一致した場合に検証を起動する。
+
+```bash
+(
+  candidate_status=$(git status --porcelain) &&
+    test -z "$candidate_status" &&
+    candidate_commit=$(git rev-parse HEAD) &&
+    candidate_target=$(mktemp -d /private/tmp/tl-candidate.XXXXXX) &&
+    cargo build --locked -p herdr-timeline --target-dir "$candidate_target" &&
+    test "$(git rev-parse HEAD)" = "$candidate_commit" &&
+    run_id=$(uuidgen) &&
+    .claude/skills/verify-herdr-timeline/scripts/codex-history.py \
+      "$candidate_target/debug/herdr-timeline" "$evidence_root/$run_id-candidate" --commit "$candidate_commit"
+)
 ```
 
 各実行は、接続のない socket の警告、起動直後の正常な空一覧、送信前の履歴なしを区別した後、`herdr agent prompt` で生成した検証本文を送る。Codex の独立 backend を `--no-daemon` で起動し、Herdr が一時環境に登録した SessionStart だけを確認する。Codex にフックの信頼画面が出た場合は、一時環境でその 1 件だけが信頼待ちであることを確認してから、画面上で信頼を選ぶ。
@@ -71,7 +77,7 @@ run_id=$(uuidgen)
 
 ## 証跡
 
-`commands.jsonl` に版、SHA、コマンド、標準出力・標準エラー・終了コード、hook の登録、pane・session・rollout・本文、停止結果が残る。`herdr.log` で隔離ソケットと起動を確認できる。最後の `status: passed` と `temporary_state_removed: true` は片付けも完了した印。失敗時は最後の操作、エラー、未確認の項目を記録する。初回試走は TUI のフォーカス、Claude Code の履歴、実アカウントや実モデルを対象としていない。
+`commands.jsonl` に版、SHA、コマンド、標準出力・標準エラー・終了コード、hook の登録、pane・session・rollout・本文、停止結果が残る。タイムアウトや起動失敗時も、対象コマンドと取得済みの出力、失敗理由が残る。`herdr.log` で隔離ソケットと起動を確認できる。最後の `status: passed` と `temporary_state_removed: true` は片付けも完了した印。失敗時は最後の操作、エラー、未確認の項目を記録する。初回試走は TUI のフォーカス、Claude Code の履歴、実アカウントや実モデルを対象としていない。
 
 ## 後片付け
 
