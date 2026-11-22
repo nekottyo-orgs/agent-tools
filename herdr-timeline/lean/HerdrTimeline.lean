@@ -540,6 +540,19 @@ theorem status_indep (steps : List Str) (xs ys : List Progress) (h : xs.Perm ys)
 
 /-! ## 未処理報告の窓口 -/
 
+/-- gather の観測判定。配列を読めなければ none、欠落や非文字列の ID は空文字列。
+    ID の整形は Rust 側で行う。 -/
+def paneListObserved (ids : Option (List Str)) : Bool :=
+  match ids with
+  | none => false
+  | some ids => ids.all fun id => !id.isEmpty
+
+theorem paneListObserved_iff (ids : Option (List Str)) :
+    paneListObserved ids = true ↔ ∃ rows, ids = some rows ∧ ∀ id ∈ rows, id ≠ [] := by
+  cases ids <;> simp [paneListObserved, List.all_eq_true]
+
+example : paneListObserved (some []) = true := rfl
+
 structure RunPane where
   id : Str
   socket : Str
@@ -594,6 +607,14 @@ theorem runWindow_active_requires_same_socket (id socket label : Str) (closed ob
   rename_i pane hf
   refine ⟨pane, List.mem_of_find?_eq_some hf, ?_⟩
   simpa [windowMatches] using List.find?_some hf
+
+theorem unreadable_paneList_cannot_confirm_absence (id socket : Str) (closed : Bool)
+    (panes : List RunPane) (ids : Option (List Str))
+    (h : paneListObserved ids = false) :
+    runWindow id socket closed (paneListObserved ids) panes ≠ .absent := by
+  intro absent
+  have observed := (runWindow_absent_requires_observation id socket closed _ panes absent).1
+  simp [h] at observed
 
 example : runWindow "p".toList "primary".toList false true
     [⟨"p".toList, "secondary".toList, []⟩] = .absent := rfl

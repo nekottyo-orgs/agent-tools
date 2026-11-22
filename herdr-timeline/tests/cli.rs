@@ -208,6 +208,7 @@ fn run_alerts_show_owner_state_without_hiding_unread_messages() {
         "sessions/empty/herdr.sock",
         "sessions/failed/herdr.sock",
         "sessions/invalid/herdr.sock",
+        "sessions/null/herdr.sock",
     ] {
         fx.write(&format!("herdr/{socket}"), "");
     }
@@ -220,6 +221,7 @@ fn run_alerts_show_owner_state_without_hiding_unread_messages() {
     */empty/herdr.sock) echo '{{"result":{{"panes":[]}}}}'; exit 0 ;;
     */failed/herdr.sock) exit 1 ;;
     */invalid/herdr.sock) echo '{{"result":{{"panes":[{{"pane_id":"wA:p2"}},{{}}]}}}}'; exit 0 ;;
+    */null/herdr.sock) echo '{{"result":{{"panes":null}}}}'; exit 0 ;;
   esac
 fi
 {herdr}"#,
@@ -235,6 +237,7 @@ fi
             "sessions/invalid/herdr.sock",
             "状態未確認 invalid",
         ),
+        ("null", "sessions/null/herdr.sock", "状態未確認 null"),
         (
             "unseen\u{1b}[31m",
             "sessions/unseen/herdr.sock",
@@ -263,7 +266,7 @@ fi
             "引き継ぐ依頼",
         );
     }
-    let o = fx.run(&["--once", "--width", "100"]);
+    let o = fx.run(&["--once", "--width", "300"]);
     let out = stdout(&o);
     assert_eq!(o.status.code(), Some(0), "{out}");
     assert!(!out.contains('\u{1b}'), "{out:?}");
@@ -280,6 +283,25 @@ fi
             "未処理の依頼は残るはず"
         );
     }
+    let warning = out
+        .lines()
+        .find(|line| line.starts_with("!! 取得不全:"))
+        .expect("不完全な一覧の診断が出るはず");
+    let v = json_of(&fx.run(&["--json"]));
+    assert_eq!(v.as_object().unwrap().len(), 3, "{v}");
+    assert!(v["watchers"].is_array(), "{v}");
+    let warnings = v["warnings"].as_array().unwrap();
+    for diagnostic in [
+        "failed: herdr pane list が終了コード 1 で失敗",
+        "invalid: herdr pane list に有効な pane_id のない pane がある",
+        "null: herdr pane list の panes が配列でない",
+    ] {
+        assert!(warning.contains(diagnostic), "{warning}");
+        assert!(warnings.iter().any(|w| w == diagnostic), "{v}");
+    }
+    assert_eq!(warnings.len(), 3, "正常な空一覧に警告は出ないはず: {v}");
+    assert_eq!(jpane(&v, "wA:p1")["key"], "default/wA:p1", "{v}");
+    assert!(out.contains("default/wA:p1"), "{out}");
 }
 
 #[test]

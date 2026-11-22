@@ -281,19 +281,24 @@ pub fn gather(env: &Env) -> Snapshot {
                 continue;
             }
         };
+        let panes = panes.get("panes").and_then(Value::as_array);
         // 空の一覧は不在を示せるが、壊れた一覧には窓口が含まれていたかもしれない。
-        if panes
-            .get("panes")
-            .and_then(Value::as_array)
-            .is_some_and(|ids| {
-                ids.iter().all(|p| {
-                    p.get("pane_id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|id| !clean(id).is_empty())
-                })
-            })
-        {
-            observed_sockets.insert(socket.clone());
+        match panes {
+            None => snap
+                .warn
+                .push(at("herdr pane list の panes が配列でない".into())),
+            Some(rows)
+                if rows
+                    .iter()
+                    .any(|p| clean(p["pane_id"].as_str().unwrap_or_default()).is_empty()) =>
+            {
+                snap.warn.push(at(
+                    "herdr pane list に有効な pane_id のない pane がある".into()
+                ));
+            }
+            Some(_) => {
+                observed_sockets.insert(socket.clone());
+            }
         }
         let mut get = |what: &str| {
             herdr(env, &[what, "list"], sock.as_deref()).unwrap_or_else(|e| {
@@ -342,7 +347,7 @@ pub fn gather(env: &Env) -> Snapshot {
             .iter()
             .map(|t| (s(t, "tab_id"), t))
             .collect();
-        for p in arr(&panes, "panes") {
+        for p in panes.into_iter().flatten() {
             let pane = clean(&s(p, "pane_id"));
             let tab = tabs.get(&s(p, "tab_id"));
             // pane の label は同じ tab に pane が複数あるときだけ足す (単独なら tab の label と同じ)

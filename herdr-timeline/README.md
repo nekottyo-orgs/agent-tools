@@ -89,7 +89,7 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 `--json` は stdout に JSON のトップレベル object 1 つだけを出す (末尾は改行 1 つ)。判定は画面と同じ関数を通す。
 
 - `panes`: pane の配列。常駐・dispatch の pane も含め、画面で隠すかどうかは `hidden` で示す
-- `warnings`: 警告の配列。herdr の一覧取得 (pane、workspace、tab) に失敗した server があると `panes` が欠けることがあるので、これで気づく
+- `warnings`: 警告の配列。一覧取得 (pane、workspace、tab) の失敗や、`panes` が配列でない場合、有効な `pane_id` のない要素がある場合に診断を含む。`panes: []` は正常な空一覧として扱う
 - `watchers`: 常駐 watcher 4 本 (`watch-pane-turns` / `watch-my-pr-reviews` / `watch-other-pr-reviews` / `watch-merged-prs`、この順) の配列。各要素は `name`、`running`、`pane`、`state_dir`、`last_activity`。`--once` の画面には出さない
   - `running`: lock を持つ 3 本は `<state_dir>/resident.lock/pid` (merged は `merged-resident.lock/pid`) の pid が数字で、`ps -o command= -p <pid>` に script 名を含めば true。pid ファイルが無い・空・数字でない・ps の失敗は false
   - `watch-pane-turns` は lock が無いので `ps -axo command=` に `watch-pane-turns.sh` を含む行があれば true (herdr-timeline 自身の行は除く)。ps は `HERDR_TIMELINE_PS_BIN` で差し替えられる
@@ -154,6 +154,8 @@ worker は inbox に `tag: progress` の msg を送り、本文の最初の行�
 
 判定部 (並び順、まとめ、行の分類、帰属、session_id の検証、brief と進捗) は [`lean/HerdrTimeline.lean`](lean/HerdrTimeline.lean) にモデルと性質の証明がある。Rust (`src/core.rs`) は関数の名前と判定をモデルに揃え、一致は `src/core.rs` の `#[cfg(test)]` が同じ入力の例で確かめる。
 
-未処理報告の窓口状態は同じモデルの `runWindow` にあり、Rust の `src/data.rs` の `read_runs` に対応する。不在は一覧の取得と解釈に成功した場合だけで、稼働中にするには pane ID と socket の両方の一致が必要。socket の正規化と一覧が観測済みかどうかはモデルへの入力であり、Rust の CLI テストが空の一覧、取得失敗、不正な一覧、別セッションを通して確かめる。
+`paneListObserved` は `src/data.rs` の `gather` に対応する。配列を取得できなければ `none`、取得できれば整形済みの pane ID の列を入力とする。欠落や非文字列の ID は空文字列で表す。空の配列は観測済みで、空の ID を含む配列は未観測となる。JSON の解釈、ID の整形、socket の正規化は Rust が行う。
+
+未処理報告の窓口状態を判定する `runWindow` は、`src/data.rs` の `read_runs` に対応する。不在を確定できるのは対象 socket の pane 一覧が観測済みの場合だけで、稼働中にするには pane ID と socket の両方の一致が必要。CLI テストは模擬 Herdr の応答を使い、空の一覧、取得失敗、不正な一覧、別セッションでの挙動を確かめる。
 
 証明は `cd herdr-timeline/lean && lake build --wfail`、実装との対応はリポジトリ直下から `cargo test --locked -p herdr-timeline` で確認する。
