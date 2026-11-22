@@ -160,4 +160,6 @@ worker は inbox に `tag: progress` の msg を送り、本文の最初の行�
 
 未処理報告の窓口状態を判定する `runWindow` は、`src/data.rs` の `read_runs` に対応する。不在を確定できるのは対象 socket の pane 一覧が観測済みの場合だけで、稼働中にするには pane ID と socket の両方の一致が必要。CLI テストは模擬 Herdr の応答を使い、空の一覧、取得失敗、不正な一覧、別セッションでの挙動を確かめる。
 
-証明は `cd herdr-timeline/lean && lake build --wfail`、実装との対応はリポジトリ直下から `cargo test --locked -p herdr-timeline` で確認する。
+`tabTarget` は `src/data.rs` の `gather` で決める Enter の移動先に対応する。複数 session の一覧で別 session の行を選んだ場合と、tab ID が空の場合は移動先がない。移動先がある場合、`src/main.rs` の `focus_tab` は一覧取得時の socket 指定 (明示パスまたは Herdr の暗黙指定) と tab ID を引き継ぐ。socket の探索と正規化は Rust が行い、PTY を使う CLI テストで代替 socket と同じ tab ID を持つ別 session の挙動を確かめる。
+
+証明は `cd herdr-timeline/lean && lake build --wfail`、実装との対応はリポジトリ直下から `cargo test --locked -p herdr-timeline` で確認する。CI では両方を実行する。

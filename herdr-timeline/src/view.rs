@@ -1,7 +1,7 @@
 // 画面の組み立て。描画する文字列を返すだけで、端末には触らない (試作の layout と同じ見た目を目標にする)。
 
 use crate::core::{group, total, Event, Kind, Status};
-use crate::data::{Detail, Goal, Run, RunWindow};
+use crate::data::{Detail, Goal, Run, RunWindow, TabTarget};
 use crate::text::{age_text, clip, clip_head, fit, fmt_stamp, pad, tl_body, width_of, wrap};
 use std::collections::HashMap;
 
@@ -31,12 +31,12 @@ pub struct Row {
     pub since: Option<i64>,
     /// 経過が観測起点 (viewer が状態を見始めた時刻。transcript が読めない、または turn が無いときだけ) なら真。≥ を付ける
     pub approx: bool,
-    pub tab_id: Option<String>,
+    pub tab_target: Option<TabTarget>,
     pub ws: (String, String),
 }
 
-/// (key, tab_id) の並び。表示順で、選択の対象になる行。tab_id が空なのは tab に移れない (別 session の) 行
-pub type Order = Vec<(String, String)>;
+/// 選択できる行の key と、Enter で移動できる場合の宛先を表示順に持つ。
+pub type Order = Vec<(String, Option<TabTarget>)>;
 
 pub struct View<'a> {
     pub rows: &'a [Row],
@@ -304,11 +304,7 @@ fn tally(rows: &[&Row]) -> String {
 }
 
 /// 選択する key。sel が order に無ければ、前回の表示順で近い順 (右隣、左隣、右 2 …) に残っている行、無ければ先頭
-fn choose(
-    order: &[(String, String)],
-    sel: Option<&str>,
-    prev: &[(String, String)],
-) -> Option<String> {
+fn choose(order: &Order, sel: Option<&str>, prev: &Order) -> Option<String> {
     let ids: Vec<&str> = order.iter().map(|x| x.0.as_str()).collect();
     if ids.is_empty() {
         return None;
@@ -334,8 +330,8 @@ enum Alert<'a> {
     Run(&'a Run),
 }
 
-/// (行, 表示順の [(key, tab_id)], 選択された key)
-pub fn layout(v: &View) -> (Vec<String>, Vec<(String, String)>, Option<String>) {
+/// (行, 表示順, 選択された key)
+pub fn layout(v: &View) -> (Vec<String>, Order, Option<String>) {
     let paint = |s: &str, code: &str| paint(v.color, s, code);
     let blocked: Vec<&Row> = v.rows.iter().filter(|x| x.status == "blocked").collect();
     let working: Vec<&Row> = v.rows.iter().filter(|x| x.status == "working").collect();
@@ -360,9 +356,9 @@ pub fn layout(v: &View) -> (Vec<String>, Vec<(String, String)>, Option<String>) 
         })
         .chain(working.iter().copied())
         .collect();
-    let order: Vec<(String, String)> = ordered
+    let order: Order = ordered
         .iter()
-        .map(|x| (x.key.clone(), x.tab_id.clone().unwrap_or_default()))
+        .map(|x| (x.key.clone(), x.tab_target.clone()))
         .collect();
     let chosen = v
         .select
@@ -604,7 +600,10 @@ mod tests {
             work: "作業".into(),
             since: Some(0),
             approx: false,
-            tab_id: tab.map(Into::into),
+            tab_target: tab.map(|id| TabTarget {
+                socket: Some("/herdr.sock".into()),
+                id: id.into(),
+            }),
             ws: (String::new(), String::new()),
         }
     }
@@ -777,8 +776,11 @@ mod tests {
         let (_, order, _) = layout(&v);
         assert_eq!(
             order,
-            vec![("a".into(), "t1".into()), ("b/p2".into(), String::new())],
-            "別 session の行も選択でき、tab_id は空のはず"
+            vec![
+                ("a".into(), rows[0].tab_target.clone()),
+                ("b/p2".into(), None),
+            ],
+            "別 session の行も選択できるが、移動先は無いはず"
         );
     }
 

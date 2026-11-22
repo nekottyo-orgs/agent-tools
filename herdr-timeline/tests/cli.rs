@@ -2,7 +2,9 @@
 // 値はすべて架空 (pane id は wA:p1 形、session id は架空の UUID)。
 
 use serde_json::json;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -109,6 +111,25 @@ impl Fx {
 
     /// extra は追加の環境変数 (watchers の state_dir・ps の差し替え用)
     fn run_env(&self, args: &[&str], runs: bool, extra: &[(&str, String)]) -> Output {
+        let mut child = self
+            .command(args, runs, extra)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        while child.try_wait().unwrap().is_none() {
+            if start.elapsed() > Duration::from_secs(10) {
+                let _ = child.kill();
+                panic!("10 秒で終わらなかった: {args:?}");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        child.wait_with_output().unwrap()
+    }
+
+    fn command(&self, args: &[&str], runs: bool, extra: &[(&str, String)]) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_herdr-timeline"));
         // 既定では実 HOME の state と実 ps に触れないよう、存在しない state_dir と何も出さない stub ps に向ける。extra で上書きできる
         self.write("ps-none/ps.sh", "#!/bin/sh\nexit 0\n");
@@ -125,8 +146,7 @@ impl Fx {
         if !runs {
             cmd.env_remove("HERDR_TIMELINE_RUNS_DIR");
         }
-        let mut child = cmd
-            .args(args)
+        cmd.args(args)
             .env(
                 "HERDR_TIMELINE_HERDR",
                 format!("sh {}", self.path("herdr/herdr.sh").display()),
@@ -137,21 +157,8 @@ impl Fx {
             .env("CODEX_HOME", self.path("codex"))
             .envs(runs.then(|| ("HERDR_TIMELINE_RUNS_DIR", self.path("runs"))))
             .env("NO_COLOR", "1")
-            .env_remove("FORCE_COLOR")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let start = Instant::now();
-        while child.try_wait().unwrap().is_none() {
-            if start.elapsed() > Duration::from_secs(10) {
-                let _ = child.kill();
-                panic!("10 秒で終わらなかった: {args:?}");
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        child.wait_with_output().unwrap()
+            .env_remove("FORCE_COLOR");
+        cmd
     }
 }
 
@@ -1192,6 +1199,149 @@ fn json_uses_the_only_discovered_socket_when_env_socket_is_absent() {
     assert!(
         v["warnings"].as_array().unwrap().is_empty(),
         "warning は出ないはず: {v}"
+    );
+}
+
+fn read_frame(pty: &mut File) -> io::Result<String> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut frame = Vec::new();
+    let mut buf = [0; 4096];
+    while !frame.ends_with(b"\x1b[J") {
+        let mut fd = libc::pollfd {
+            fd: pty.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ms = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis();
+        // SAFETY: poll に有効な fd を持つ 1 要素を渡す
+        match unsafe { libc::poll(&mut fd, 1, ms as i32) } {
+            -1 if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted => continue,
+            -1 => return Err(io::Error::last_os_error()),
+            0 => return Err(io::ErrorKind::TimedOut.into()),
+            _ => {}
+        }
+        let n = pty.read(&mut buf)?;
+        if n == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        frame.extend_from_slice(&buf[..n]);
+    }
+    Ok(String::from_utf8_lossy(&frame).into_owned())
+}
+
+fn press_enter(fx: &Fx, pane: &str) -> String {
+    let (mut master, mut slave) = (-1, -1);
+    // SAFETY: openpty の出力先を渡し、成功時だけ 2 つの fd の所有権を受け取る
+    let (mut master, slave) = unsafe {
+        assert_eq!(
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ),
+            0,
+            "PTY を開けない: {}",
+            io::Error::last_os_error()
+        );
+        (File::from_raw_fd(master), File::from_raw_fd(slave))
+    };
+    for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
+        // SAFETY: 生存中の File の fd だけを変更する
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+            0
+        );
+    }
+    let mut child = fx
+        .command(&["--interval", "60"], true, &[])
+        .env("HERDR_TIMELINE_CALLER", pane)
+        .stdin(slave.try_clone().unwrap())
+        .stdout(slave)
+        .spawn()
+        .unwrap();
+    let frame = (|| {
+        read_frame(&mut master)?;
+        master.write_all(b"\r")?;
+        let frame = read_frame(&mut master)?;
+        master.write_all(b"q")?;
+        Ok::<_, io::Error>(frame)
+    })();
+    let start = Instant::now();
+    while frame.is_ok() && child.try_wait().unwrap().is_none() {
+        if start.elapsed() >= Duration::from_secs(10) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if child.try_wait().unwrap().is_none() {
+        let _ = child.kill();
+    }
+    let status = child.wait().unwrap();
+    let frame = frame.expect("PTY で一覧を描画して Enter を処理できるはず");
+    assert!(status.success(), "q で終了するはず: {status}");
+    frame
+}
+
+fn log_focus(fx: &Fx) {
+    let orig = fs::read_to_string(fx.path("herdr/herdr.sh")).unwrap();
+    fx.write(
+        "herdr/herdr.sh",
+        &format!(
+            r#"if [ "$1 $2" = 'tab focus' ]; then
+  printf '%s %s\n' "$HERDR_SOCKET_PATH" "$3" >> "$(dirname "$0")/focus.log"
+  [ -e "$HERDR_SOCKET_PATH" ]
+  exit $?
+fi
+[ -e "$HERDR_SOCKET_PATH" ] || exit 1
+{orig}"#,
+        ),
+    );
+    fx.write("herdr/focus.log", "");
+}
+
+#[test]
+fn enter_focuses_tab_on_the_only_discovered_socket() {
+    let fx = Fx::new("pty-fallback");
+    let discovered = "herdr/sessions/foo/herdr.sock";
+    fx.write(discovered, "");
+    log_focus(&fx);
+
+    press_enter(&fx, "wA:p1");
+    assert_eq!(
+        fs::read_to_string(fx.path("herdr/focus.log")).unwrap(),
+        format!("{} tA:1\n", fx.path(discovered).display()),
+        "一覧を取得した socket の tab に移るはず"
+    );
+}
+
+#[test]
+fn enter_does_not_focus_a_foreign_tab_with_the_same_id() {
+    let fx = Fx::new("pty-foreign");
+    fx.write("herdr/herdr.sock", "");
+    fx.write("herdr/sessions/other/herdr.sock", "");
+    log_focus(&fx);
+
+    let frame = press_enter(&fx, "other/wA:p1");
+    assert!(
+        frame.contains("別 session の行の tab には移れない"),
+        "別 session の行であることを表示するはず: {frame}"
+    );
+    assert!(
+        fs::read_to_string(fx.path("herdr/focus.log"))
+            .unwrap()
+            .is_empty(),
+        "別 session の行を選ぶと、どちらの socket にも focus を送らないはず"
+    );
+
+    press_enter(&fx, "default/wA:p1");
+    assert_eq!(
+        fs::read_to_string(fx.path("herdr/focus.log")).unwrap(),
+        format!("{} tA:1\n", fx.sock()),
+        "今の session の行からは同じ ID の tab に移れるはず"
     );
 }
 
