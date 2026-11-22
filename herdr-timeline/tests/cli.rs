@@ -220,7 +220,7 @@ fn run_alerts_show_owner_state_without_hiding_unread_messages() {
   case "$HERDR_SOCKET_PATH" in
     */empty/herdr.sock) echo '{{"result":{{"panes":[]}}}}'; exit 0 ;;
     */failed/herdr.sock) exit 1 ;;
-    */invalid/herdr.sock) echo '{{"result":{{"panes":[{{"pane_id":"wA:p2"}},{{}}]}}}}'; exit 0 ;;
+    */invalid/herdr.sock) echo '{{"result":{{"panes":[{{"pane_id":"wA:p2","agent_status":"working"}},{{"pane_id":" ","agent_status":"blocked","label":"架空の要対応"}},{{}}]}}}}'; exit 0 ;;
     */null/herdr.sock) echo '{{"result":{{"panes":null}}}}'; exit 0 ;;
   esac
 fi
@@ -300,6 +300,19 @@ fi
         assert!(warnings.iter().any(|w| w == diagnostic), "{v}");
     }
     assert_eq!(warnings.len(), 3, "正常な空一覧に警告は出ないはず: {v}");
+    let panes = v["panes"].as_array().unwrap();
+    let reads = fs::read_to_string(fx.path("herdr/reads.log")).unwrap();
+    assert_eq!(
+        (
+            out.contains("架空の要対応"),
+            panes.iter().any(|p| p["pane_id"] == ""),
+            reads.lines().any(str::is_empty),
+        ),
+        (false, false, false),
+        "無効な ID は画面・JSON・pane read のいずれにも渡らないはず"
+    );
+    assert!(panes.iter().any(|p| p["key"] == "invalid/wA:p2"), "{v}");
+    assert!(out.contains("invalid/wA:p2"), "{out}");
     assert_eq!(jpane(&v, "wA:p1")["key"], "default/wA:p1", "{v}");
     assert!(out.contains("default/wA:p1"), "{out}");
 }

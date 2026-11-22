@@ -540,18 +540,27 @@ theorem status_indep (steps : List Str) (xs ys : List Progress) (h : xs.Perm ys)
 
 /-! ## 未処理報告の窓口 -/
 
+def validPaneId (id : Str) : Bool := !id.isEmpty
+
 /-- gather の観測判定。配列を読めなければ none、欠落や非文字列の ID は空文字列。
     ID の整形は Rust 側で行う。 -/
 def paneListObserved (ids : Option (List Str)) : Bool :=
   match ids with
   | none => false
-  | some ids => ids.all fun id => !id.isEmpty
+  | some ids => ids.all validPaneId
 
 theorem paneListObserved_iff (ids : Option (List Str)) :
     paneListObserved ids = true ↔ ∃ rows, ids = some rows ∧ ∀ id ∈ rows, id ≠ [] := by
-  cases ids <;> simp [paneListObserved, List.all_eq_true]
+  cases ids <;> simp [paneListObserved, validPaneId, List.all_eq_true]
 
 example : paneListObserved (some []) = true := rfl
+
+/-- gather が Snapshot に残す pane の ID。観測できなかった一覧でも有効な行は残す。 -/
+def retainedPaneIds (ids : List Str) : List Str := ids.filter validPaneId
+
+theorem retainedPaneIds_iff (ids : List Str) (id : Str) :
+    id ∈ retainedPaneIds ids ↔ id ∈ ids ∧ id ≠ [] := by
+  simp [retainedPaneIds, validPaneId]
 
 structure RunPane where
   id : Str
