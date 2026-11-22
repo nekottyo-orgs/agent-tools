@@ -61,23 +61,44 @@ cp "$release_dir/release.json" "$evidence_root/$run_id-release/release.json"
 (
   evidence_root="$HOME/.local/state/herdr-timeline-verification"
   mkdir -p "$evidence_root" || exit
+  run_id=$(uuidgen) || exit
+  candidate_evidence="$evidence_root/$run_id-candidate"
+  mkdir -m 700 "$candidate_evidence" || exit
+  candidate_target=
+  trap '
+    run_exit=$?
+    final_exit=$run_exit
+    cleanup_exit=null
+    if [ -n "$candidate_target" ]; then
+      cleanup_exit=0
+      rm -rf -- "$candidate_target" || cleanup_exit=$?
+      if [ "$cleanup_exit" -ne 0 ]; then
+        printf "Failed to remove candidate target: %s\n" "$candidate_target" >&2
+        if [ "$final_exit" -eq 0 ]; then final_exit=1; fi
+      fi
+    fi
+    result=failed
+    if [ "$final_exit" -eq 0 ]; then result=passed; fi
+    if ! (
+      printf "{\"status\":\"%s\",\"exit\":%s,\"run_exit\":%s,\"cleanup_exit\":%s}\n" \
+        "$result" "$final_exit" "$run_exit" "$cleanup_exit" > "$candidate_evidence/.result.json.tmp" &&
+        mv "$candidate_evidence/.result.json.tmp" "$candidate_evidence/result.json"
+    ); then
+      printf "Failed to save candidate result: %s\n" "$candidate_evidence" >&2
+      if [ "$final_exit" -eq 0 ]; then final_exit=1; fi
+    fi
+    exit "$final_exit"
+  ' EXIT
+  printf '%s\n' "$candidate_evidence"
+  exec > "$candidate_evidence/run.log" 2>&1 || exit
   candidate_status=$(git status --porcelain) || exit
   test -z "$candidate_status" || exit
   candidate_commit=$(git rev-parse HEAD) || exit
   candidate_target=$(mktemp -d /private/tmp/tl-candidate.XXXXXX) || exit
-  trap '
-    status=$?
-    if ! rm -rf -- "$candidate_target"; then
-      printf "Failed to remove candidate target: %s\n" "$candidate_target" >&2
-      if [ "$status" -eq 0 ]; then status=1; fi
-    fi
-    exit "$status"
-  ' EXIT
   cargo build --locked -p herdr-timeline --target-dir "$candidate_target" &&
     test "$(git rev-parse HEAD)" = "$candidate_commit" &&
-    run_id=$(uuidgen) &&
     .claude/skills/verify-herdr-timeline/scripts/codex-history.py \
-      "$candidate_target/debug/herdr-timeline" "$evidence_root/$run_id-candidate" --commit "$candidate_commit"
+      "$candidate_target/debug/herdr-timeline" "$candidate_evidence/runner" --commit "$candidate_commit"
 )
 ```
 
@@ -87,7 +108,9 @@ cp "$release_dir/release.json" "$evidence_root/$run_id-release/release.json"
 
 ## 証跡
 
-`commands.jsonl` に版、SHA、コマンド、標準出力・標準エラー・終了コード、hook の登録、pane・session・rollout・本文、停止結果が残る。タイムアウトや起動失敗時も、対象コマンドと取得済みの出力、失敗理由が残る。`herdr.log` で隔離ソケットと起動を確認できる。最後の `status: passed` と `temporary_state_removed: true` は、隔離環境の片付けまで完了した印。候補版の合格には、新規 target の削除を含むコードブロックの終了コード 0 も必要。失敗時は最後の操作、エラー、未確認の項目を記録する。初回試走は TUI のフォーカス、Claude Code の履歴、実アカウントや実モデルを対象としていない。
+候補版は、表示された証跡ディレクトリの `result.json` を最初に読む。`status: passed` と `exit: 0` が揃えば、新規 target の削除を含めて合格。`run_exit` はビルドと検証の終了コード、`cleanup_exit` は target 削除の終了コードで、target 作成前に止まった場合は `null`。失敗時は同じディレクトリの `run.log` でビルド出力と削除エラーを確認する。`result.json` が無ければ完了は未確認。
+
+次に `commands.jsonl` と `herdr.log` を読む。候補版では `runner/` 配下、公開版では証跡ディレクトリ直下にある。`commands.jsonl` に版、SHA、コマンド、標準出力・標準エラー・終了コード、hook の登録、pane・session・rollout・本文、停止結果が残る。タイムアウトや起動失敗時も、対象コマンドと取得済みの出力、失敗理由が残る。`herdr.log` で隔離ソケットと起動を確認できる。`commands.jsonl` の最後の `status: passed` と `temporary_state_removed: true` は、補助スクリプトが隔離環境の片付けまで完了した印。初回試走は TUI のフォーカス、Claude Code の履歴、実アカウントや実モデルを対象としていない。
 
 ## 後片付け
 
