@@ -211,17 +211,14 @@ impl Seen {
                     *e = (p.status.clone(), now);
                 }
                 let working = p.status == "working";
-                let turn = if working {
-                    briefs.turn_start(p, dirs)
-                } else {
-                    None
-                };
+                let track = dirs.find(p).and_then(|path| briefs.scan(&path, p.codex));
+                let turn = track.as_ref().and_then(|t| t.last_turn_ts);
                 Row {
                     key: p.key.clone(),
                     tag: p.tag.clone(),
                     status: p.status.clone(),
                     name: p.name.clone(),
-                    work: summary(&briefs.pane_goal(p, dirs, &progress), &p.title),
+                    work: summary(&briefs.pane_goal(p, track, &progress), &p.title),
                     since: if working {
                         Some(turn.unwrap_or(e.1))
                     } else if p.status == "blocked" {
@@ -654,6 +651,132 @@ mod tests {
             ws: (String::new(), String::new()),
             socket: socket.into(),
         }
+    }
+
+    #[test]
+    fn working_rows_share_the_incremental_scan_across_refreshes() {
+        use std::fs::{self, File, OpenOptions};
+
+        let root =
+            std::env::temp_dir().join(format!("herdr-timeline-refresh-{}", std::process::id()));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let env = Env {
+            herdr: Vec::new(),
+            herdr_dir: root.clone(),
+            projects: root.clone(),
+            codex_sessions: root.join("unused"),
+            runs: None,
+            own_sock: root.join("herdr.sock"),
+            show_resident: false,
+            keep_hidden: false,
+        };
+        let pane = |id: &str, sid: &str| PaneRow {
+            sid: Some(sid.into()),
+            ..pane_row(id, id, env.own_sock.to_str().unwrap())
+        };
+        let snap = Snapshot {
+            panes: vec![pane("wA:p1", "s1"), pane("wA:p2", "s2")],
+            ..Snapshot::default()
+        };
+        let paths = TranscriptPaths::new(&env, &snap.panes);
+        let line = |goal: &str, minute: u8| {
+            let brief = root.join(format!("brief-{goal}.md"));
+            fs::write(&brief, format!("# {goal}\n")).unwrap();
+            let at = format!("2026-01-02T03:{minute:02}:00Z");
+            let body = serde_json::json!({
+                "type": "user", "timestamp": at,
+                "message": {"content": format!("{} を読んで", brief.display())},
+            });
+            (format!("{body}\n"), crate::text::parse_time(&at))
+        };
+        let (first, first_at) = line("開始", 0);
+        let (added, added_at) = line("追加", 1);
+        let (short, short_at) = line("短縮", 2);
+        let (rotated, rotated_at) = line("交代", 3);
+        let (other, other_at) = line("別件", 4);
+        let (a, b) = (project.join("s1.jsonl"), project.join("s2.jsonl"));
+        fs::write(&a, &first).unwrap();
+        fs::write(&b, &other).unwrap();
+        let mut seen = Seen(HashMap::new());
+        let mut briefs = Briefs::default();
+        let mut old = Briefs::default();
+        let mut cache = Transcripts::default();
+        let mut refresh = |briefs: &mut Briefs, goal: &str, at, bytes: usize, retry: usize| {
+            let (scans, read) = (briefs.scans, briefs.read_bytes);
+            let (old_scans, old_read) = (old.scans, old.read_bytes);
+            // 変更前は経過とゴールがそれぞれ transcript を走査していた。
+            for path in [&a, &b] {
+                old.scan(path, false).unwrap();
+                old.scan(path, false).unwrap();
+            }
+            let rows = seen.rows(&snap, 0, &paths, briefs);
+            assert_eq!(
+                old.scans - old_scans,
+                4,
+                "変更前は 2 pane を各 2 回走査する"
+            );
+            assert_eq!(briefs.scans - scans, 2, "各 pane を 1 回ずつ走査するはず");
+            assert_eq!(
+                briefs.read_bytes - read,
+                bytes as u64,
+                "必要な範囲だけ読むはず"
+            );
+            assert_eq!(old.read_bytes - old_read, (bytes + retry) as u64);
+            assert_eq!((rows[0].work.as_str(), rows[0].since), (goal, at));
+            assert_eq!((rows[1].work.as_str(), rows[1].since), ("別件", other_at));
+            assert!(rows.iter().all(|row| !row.approx));
+        };
+        let append = |part: &str| {
+            OpenOptions::new()
+                .append(true)
+                .open(&a)
+                .unwrap()
+                .write_all(part.as_bytes())
+                .unwrap();
+        };
+        let selected = |briefs: &mut Briefs, cache: &mut Transcripts, key: &str| {
+            let (_, detail) = expanded(&snap, &Some(key.into()), cache, briefs, &paths).unwrap();
+            let latest = detail.events.first().map(|e| e.ts);
+            (detail.goal.goal.unwrap(), latest)
+        };
+
+        refresh(&mut briefs, "開始", first_at, first.len() + other.len(), 0);
+        append(&added[..10]);
+        refresh(&mut briefs, "開始", first_at, 10, 10);
+        append(&added[10..]);
+        refresh(&mut briefs, "追加", added_at, added.len(), 0);
+        fs::write(&a, &short).unwrap();
+        refresh(&mut briefs, "短縮", short_at, short.len(), 0);
+        assert_eq!(
+            selected(&mut briefs, &mut cache, "wA:p1"),
+            ("短縮".into(), short_at)
+        );
+
+        // サイズや mtime では区別できないので、同じパスに別のファイルを置く。
+        assert_eq!(short.len(), rotated.len());
+        let replacement = project.join("replacement");
+        let modified = fs::metadata(&a).unwrap().modified().unwrap();
+        fs::write(&replacement, &rotated).unwrap();
+        File::open(&replacement)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert_eq!(
+            fs::metadata(&replacement).unwrap().modified().unwrap(),
+            modified
+        );
+        fs::rename(&replacement, &a).unwrap();
+        refresh(&mut briefs, "交代", rotated_at, rotated.len(), 0);
+        for (key, goal, at) in [
+            ("wA:p1", "交代", rotated_at),
+            ("wA:p2", "別件", other_at),
+            ("wA:p1", "交代", rotated_at),
+        ] {
+            assert_eq!(selected(&mut briefs, &mut cache, key), (goal.into(), at));
+        }
+        refresh(&mut briefs, "交代", rotated_at, 0, 0);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

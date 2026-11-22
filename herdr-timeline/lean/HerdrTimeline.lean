@@ -1,8 +1,8 @@
 /-
-目的: herdr-timeline (src/core.rs) の判定部を写したモデルと、その性質の証明。
+目的: herdr-timeline の判定と増分読み取りを写したモデルと、その性質の証明。
 
 範囲 (why):
-  - 証明の対象はこのモデル。Rust との一致は src/core.rs の #[cfg(test)] が、同じ入力の例で確かめる
+  - 証明の対象はこのモデル。Rust との対応は同じ条件の入力を使う回帰試験で確かめる
   - 文字列は List Char で扱う。core の String の補題は少なく、先頭の空白の除去などを帰納法で示すため
   - 時刻は秒の Nat。transcript の行の解釈 (JSON) と、ファイルの読み取りそのものは対象外。
     読めない入力は none として受ける
@@ -667,6 +667,31 @@ example : selectRollout true none [⟨['a'], some ['a']⟩] = none := rfl
 example : selectRollout true (some ['a']) [⟨['a'], some ['b']⟩] = none := rfl
 example : selectRollout true (some ['a']) [⟨['a'], some ['a']⟩, ⟨['a'], some ['a']⟩] = none := rfl
 example : (selectRollout true (some ['a']) [⟨['a'], some ['a']⟩]).isSome = true := rfl
+
+/-! ## transcript の増分読み取り
+
+同じファイルに完全な行が追記されると仮定する。サイズが読み取り位置を下回るか、
+ファイルの識別子が変わったら、それまでの要約を捨てて先頭から読む。
+-/
+
+def resumeOffset (sameFile : Bool) (size offset : Nat) : Nat :=
+  if sameFile && offset ≤ size then offset else 0
+
+theorem resumeOffset_sameFile (size offset : Nat) (h : offset ≤ size) :
+    resumeOffset true size offset = offset := by
+  simp [resumeOffset, h]
+
+theorem resumeOffset_shrunk (sameFile : Bool) (size offset : Nat) (h : size < offset) :
+    resumeOffset sameFile size offset = 0 := by
+  simp [resumeOffset, Nat.not_le_of_lt h]
+
+theorem resumeOffset_replaced (size offset : Nat) : resumeOffset false size offset = 0 := by
+  simp [resumeOffset]
+
+/-- 完全な行をまとめて読む場合も、追記だけを読む場合も、同じ順番で要約に反映する。 -/
+theorem fold_append {α β : Type} (step : α → β → α) (initial : α) (prefixLines suffix : List β) :
+    (prefixLines ++ suffix).foldl step initial = suffix.foldl step (prefixLines.foldl step initial) :=
+  List.foldl_append
 
 /-! ## Enter での tab 移動 -/
 

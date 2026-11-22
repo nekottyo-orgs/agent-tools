@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Mutex, OnceLock};
@@ -1051,7 +1051,7 @@ impl Queue {
 /// 解析結果のキャッシュ。開いている Timeline は 1 つなので 1 件だけ持つ
 #[derive(Default)]
 pub struct Transcripts {
-    key: Option<(PathBuf, SystemTime, u64)>,
+    key: Option<(PathBuf, (u64, u64), SystemTime, u64)>,
     val: Parsed,
     pub parses: usize,
 }
@@ -1059,9 +1059,14 @@ pub struct Transcripts {
 impl Transcripts {
     /// 読めない transcript はイベント 0 件。失敗はキャッシュしない (権限を直したら次の周期で読む)
     pub fn get(&mut self, path: &Path, codex: bool) -> Parsed {
-        let key = fs::metadata(path)
-            .ok()
-            .and_then(|m| Some((path.to_path_buf(), m.modified().ok()?, m.len())));
+        let key = fs::metadata(path).ok().and_then(|m| {
+            Some((
+                path.to_path_buf(),
+                (m.dev(), m.ino()),
+                m.modified().ok()?,
+                m.len(),
+            ))
+        });
         if key.is_some() && key == self.key {
             return self.val.clone();
         }
@@ -1105,6 +1110,7 @@ pub struct Goal {
 /// transcript ごとの追跡状態。transcript は追記だけなので、前回読んだ位置 (offset) から後ろだけを読む
 #[derive(Clone, Default)]
 pub struct BriefTracker {
+    file_id: (u64, u64),
     offset: u64,
     pub first_ts: Option<i64>,
     pub last_brief: Option<String>,
@@ -1128,21 +1134,31 @@ pub struct Briefs {
     docs: HashMap<String, (SystemTime, Option<String>, Vec<String>)>,
     /// transcript から読んだバイト数。差分だけを読んでいることをテストで確かめる
     pub read_bytes: u64,
+    #[cfg(test)]
+    pub scans: usize,
 }
 
 impl Briefs {
     /// 読めなければ状態を変えず None (ゴール無しで続ける)
     pub fn scan(&mut self, path: &Path, codex: bool) -> Option<BriefTracker> {
+        #[cfg(test)]
+        {
+            self.scans += 1;
+        }
         let codex_id = if codex {
             Some(rollout_id(path.file_name()?.to_str()?)?)
         } else {
             None
         };
         let mut f = open_transcript(path, codex_id)?;
-        let size = f.metadata().ok()?.len();
+        let meta = f.metadata().ok()?;
+        let file_id = (meta.dev(), meta.ino());
         let mut t = self.tracks.get(path).cloned().unwrap_or_default();
-        if size < t.offset {
-            t = BriefTracker::default(); // 縮んだら別物とみなして最初から読む
+        if file_id != t.file_id || meta.len() < t.offset {
+            t = BriefTracker {
+                file_id,
+                ..BriefTracker::default()
+            };
         }
         f.seek(SeekFrom::Start(t.offset)).ok()?;
         let mut buf = Vec::new();
@@ -1236,20 +1252,14 @@ impl Briefs {
         }
     }
 
-    /// working の経過の起点。transcript の最後の turn の時刻。読めない、または turn が無いときは None
-    pub fn turn_start(&mut self, row: &PaneRow, paths: &TranscriptPaths) -> Option<i64> {
-        let p = paths.find(row)?;
-        self.scan(&p, row.codex)?.last_turn_ts
-    }
-
     /// pane 行のゴール。progress は read_msgs(.., true) で読んだ msg
     pub fn pane_goal(
         &mut self,
         row: &PaneRow,
-        paths: &TranscriptPaths,
+        track: Option<BriefTracker>,
         progress: &[InMsg],
     ) -> Goal {
-        let Some(t) = paths.find(row).and_then(|p| self.scan(&p, row.codex)) else {
+        let Some(t) = track else {
             return Goal::default();
         };
         let (Some(brief), Some(since)) = (t.last_brief, t.last_brief_ts) else {
