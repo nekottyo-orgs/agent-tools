@@ -1511,10 +1511,23 @@ fn watchers_running_follows_lock_pid_and_ps() {
         "merged の lock は別 (pid ファイル無し)"
     );
     for line in [
+        "S bash -e /x/watch-my-pr-reviews.sh\n",
+        "S bash -o pipefail /x/watch-my-pr-reviews.sh\n",
+    ] {
+        fx.write("ps/ps-pid-4242", line);
+        assert_eq!(watchers_of(&fx, &env)[1]["running"], true, "{line:?}");
+    }
+    for line in [
         "S vim /x/watch-my-pr-reviews.sh\n",
         "S bash /x/watch-my-pr-reviews.sh.bak\n",
         "S bash /x/other.sh /x/watch-my-pr-reviews.sh\n",
+        "S bash -o pipefail /x/other.sh /x/watch-my-pr-reviews.sh\n",
         "S bash -c /x/watch-my-pr-reviews.sh\n",
+        "S bash -ec /x/watch-my-pr-reviews.sh\n",
+        "S bash -s -- /x/watch-my-pr-reviews.sh\n",
+        "S bash -es /x/watch-my-pr-reviews.sh\n",
+        // ps では空白入りのパスと、空白で区切った複数の引数を区別できない
+        "S bash /x/with space/watch-my-pr-reviews.sh\n",
         "T bash /x/watch-my-pr-reviews.sh\n",
         "Z /x/watch-my-pr-reviews.sh\n",
     ] {
@@ -1559,6 +1572,8 @@ fn watchers_pane_turns_uses_full_ps_listing_without_itself() {
         "ps/ps-all",
         "SELF S herdr-timeline --json\n33 S bash -- /x/herdr-timeline/scripts/watch-pane-turns.sh\n",
     );
+    assert_eq!(watchers_of(&fx, &env)[0]["running"], true);
+    fx.write("ps/ps-all", " 22 S bash -eux /x/watch-pane-turns.sh\n");
     assert_eq!(watchers_of(&fx, &env)[0]["running"], true);
 }
 

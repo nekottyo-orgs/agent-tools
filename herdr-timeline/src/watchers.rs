@@ -67,6 +67,28 @@ fn ps_out(ps: &str, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
+fn bash_script_arg<'a>(mut args: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    while let Some(arg) = args.next() {
+        match arg {
+            "--" => return args.next(),
+            "-o" | "+o" | "-O" | "+O" => {
+                args.next()?;
+            }
+            // -c や -s の後ろに現れる引数をスクリプトと取り違えないよう、対応するフラグだけを読み飛ばす。
+            _ => match arg.strip_prefix(['-', '+']) {
+                Some(flags)
+                    if !flags.is_empty()
+                        && flags
+                            .bytes()
+                            .all(|flag| b"abBCeEfhHkmpPTuvx".contains(&flag)) => {}
+                Some(_) => return None,
+                None => return Some(arg),
+            },
+        }
+    }
+    None
+}
+
 fn watcher_process<'a>(mut fields: impl Iterator<Item = &'a str>, script: &str) -> bool {
     let Some(state) = fields.next() else {
         return false;
@@ -77,13 +99,7 @@ fn watcher_process<'a>(mut fields: impl Iterator<Item = &'a str>, script: &str) 
     // shortcut: ps は引数の境界を残さないため空白を含むパスは対象外。必要になったら argv を直接取得する。
     let basename = |arg: &'a str| arg.rsplit('/').next().unwrap_or(arg);
     match fields.next().map(basename) {
-        Some("bash") => {
-            let script_arg = match fields.next() {
-                Some("--") => fields.next(),
-                arg => arg,
-            };
-            script_arg.map(basename) == Some(script)
-        }
+        Some("bash") => bash_script_arg(fields).map(basename) == Some(script),
         command => command == Some(script),
     }
 }
