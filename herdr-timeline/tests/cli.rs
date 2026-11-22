@@ -175,8 +175,19 @@ fn sh(args: &[&str]) -> Output {
 }
 
 #[test]
-fn once_shows_three_sections_without_controls() {
+fn once_excludes_done_while_json_and_timeline_keep_it() {
     let fx = Fx::new("once");
+    let mut panes: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fx.path("herdr/panes.json")).unwrap()).unwrap();
+    panes["result"]["panes"]
+        .as_array_mut()
+        .unwrap()
+        .push(pane("wA:p4", "unknown", SID2, "tA:3", "wA", "補助"));
+    fx.write("herdr/panes.json", &panes.to_string());
+    fx.transcript(
+        SID_MISSING,
+        &[user("2026-01-02T03:00:00Z", "完了済みの指示")],
+    );
     for i in 0..3 {
         fx.msg(
             &format!("runs/r1/inbox/new/{i}.msg"),
@@ -190,20 +201,59 @@ fn once_shows_three_sections_without_controls() {
     let o = fx.run(&["--once", "--width", "100"]);
     let out = stdout(&o);
     assert_eq!(o.status.code(), Some(0), "--once は 0 で終わるはず: {out}");
-    for h in ["■ 要対応 2", "■ 作業中 1", "■ done / idle"] {
-        assert!(out.contains(h), "見出し {h} が出るはず: {out}");
+    let mut remaining = out.as_str();
+    for line in [
+        "■ 要対応 2",
+        "▲ 窓口 稼働中 作業場 / 実装  未処理の報告 3 件",
+        "× 作業場 / 調査",
+        "■ 作業中 1",
+        "◐ 作業場 / 実装",
+        "実装 の title",
+        "■ idle / unknown",
+        "作業場  ○ 1  · 1",
+    ] {
+        remaining = remaining
+            .split_once(line)
+            .unwrap_or_else(|| panic!("{line:?} が順に出るはず: {out}"))
+            .1;
     }
     assert!(
-        out.contains("▲ 窓口 稼働中 作業場 / 実装  未処理の報告 3 件"),
-        "未処理の報告がある run は要対応に出て窓口は名前で呼ぶはず: {out}"
-    );
-    assert!(
-        out.contains("実装 の title"),
-        "ゴールが無ければ title を要約にするはず: {out}"
+        !out.contains("別件") && !out.contains('✓'),
+        "done だけの workspace と done の件数は出ないはず: {out}"
     );
     assert!(
         !out.contains('\u{1b}'),
         "外部入力の制御文字は出さないはず: {out:?}"
+    );
+
+    let v = json_of(&fx.run(&["--json"]));
+    assert_eq!(
+        jpane(&v, "wB:p1")["status"],
+        "done",
+        "JSON には done が残るはず"
+    );
+    let timeline = fx.run(&["--timeline", "wB:p1"]);
+    assert!(timeline.status.success(), "done の Timeline を引けるはず");
+    assert!(
+        stdout(&timeline).contains("完了済みの指示"),
+        "done の履歴が出るはず: {timeline:?}"
+    );
+
+    panes["result"]["panes"][2]["agent_status"] = json!("done");
+    fx.write("herdr/panes.json", &panes.to_string());
+    let out = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        out.contains("作業場  · 1") && !out.contains('○') && !out.contains('✓'),
+        "idle が done になった次の描画では unknown の件数だけが残るはず: {out}"
+    );
+
+    panes["result"]["panes"][4]["agent_status"] = json!("done");
+    fx.write("herdr/panes.json", &panes.to_string());
+    let out = stdout(&fx.run(&["--once", "--width", "100"]));
+    assert!(
+        out.lines().filter(|line| line.starts_with('■')).count() == 2
+            && !out.contains(['○', '·', '✓']),
+        "集計対象が無くなれば要対応と作業中の見出しだけが残るはず: {out}"
     );
 }
 
@@ -996,7 +1046,7 @@ fn jpane<'a>(v: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
 }
 
 /// --once の出力の (個別の行の pane tag, 畳んだ件数の合計)。個別の行は状態の記号 (× ◐) で始まり、行末が pane tag。
-/// 畳んだ行 (done / idle の節) は "<記号> <件数>" の並び
+/// 畳んだ行 (idle / unknown の節) は "<記号> <件数>" の並び
 fn once_counts(out: &str) -> (Vec<String>, usize) {
     let mut rows = Vec::new();
     let mut folded = 0;
@@ -1004,7 +1054,7 @@ fn once_counts(out: &str) -> (Vec<String>, usize) {
     for l in out.lines() {
         let t = l.trim_start();
         if t.starts_with('■') {
-            in_fold = t.starts_with("■ done");
+            in_fold = t == "■ idle / unknown";
         } else if in_fold {
             let w: Vec<&str> = t.split_whitespace().collect();
             folded += w
@@ -1019,7 +1069,7 @@ fn once_counts(out: &str) -> (Vec<String>, usize) {
     (rows, folded)
 }
 
-/// (blocked か working の key の集合, それ以外の数)
+/// (blocked か working の key の集合, idle と unknown の数)
 fn json_split(v: &serde_json::Value, all: bool) -> (Vec<String>, usize) {
     let mut keys = Vec::new();
     let mut rest = 0;
@@ -1029,7 +1079,8 @@ fn json_split(v: &serde_json::Value, all: bool) -> (Vec<String>, usize) {
         }
         match p["status"].as_str().unwrap() {
             "blocked" | "working" => keys.push(p["key"].as_str().unwrap().to_string()),
-            _ => rest += 1,
+            "idle" | "unknown" => rest += 1,
+            _ => (),
         }
     }
     keys.sort();
@@ -1044,13 +1095,18 @@ fn json_matches_once_rows_and_folded_counts() {
         v["warnings"].as_array().unwrap().is_empty(),
         "警告は無いはず: {v}"
     );
-    // (a) hidden でない blocked / working は --once の個別の行と 1 対 1、(b) 残りは畳んだ件数の合計
-    let (mut rows, folded) = once_counts(&stdout(&fx.run(&["--once", "--width", "100"])));
+    let out = stdout(&fx.run(&["--once", "--width", "100"]));
+    let (mut rows, folded) = once_counts(&out);
     rows.sort();
     let (keys, rest) = json_split(&v, false);
     assert_eq!(keys, rows, "個別の行の集合が一致するはず");
     assert_eq!(rest, folded, "畳んだ件数の合計が一致するはず");
-    // (c) 全 pane の集合は --once --show-resident と等しい
+    assert!(
+        out.split_once("作業場  ○ 1")
+            .is_some_and(|(_, rest)| rest.contains("別件  · 1"))
+            && !out.contains('✓'),
+        "workspace の順序と idle・unknown の集計を保つはず: {out}"
+    );
     let (mut rows, folded) = once_counts(&stdout(&fx.run(&[
         "--once",
         "--width",
@@ -1061,11 +1117,11 @@ fn json_matches_once_rows_and_folded_counts() {
     let (keys, rest) = json_split(&v, true);
     assert_eq!(
         keys, rows,
-        "--show-resident の個別の行は全 pane と一致するはず"
+        "--show-resident の個別の行は blocked・working と一致するはず"
     );
     assert_eq!(
         rest, folded,
-        "--show-resident の畳んだ件数は全 pane と一致するはず"
+        "--show-resident の集計は idle・unknown と一致するはず"
     );
 }
 

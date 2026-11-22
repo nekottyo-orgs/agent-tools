@@ -277,7 +277,7 @@ fn tint_tally(rows: &[&Row], parts: &[String], color: bool) -> Vec<String> {
                         return t.to_string();
                     }
                     idx += 1;
-                    let k = ["done", "idle", "unknown"]
+                    let k = ["idle", "unknown"]
                         .into_iter()
                         .find(|k| symbol(k) == t && rows.iter().any(|x| x.status == *k));
                     match k {
@@ -295,7 +295,7 @@ fn tint_tally(rows: &[&Row], parts: &[String], color: bool) -> Vec<String> {
 
 fn tally(rows: &[&Row]) -> String {
     let c = |s: &str| rows.iter().filter(|x| x.status == s).count();
-    ["done", "idle", "unknown"]
+    ["idle", "unknown"]
         .iter()
         .filter(|k| c(k) > 0)
         .map(|k| format!("{} {}", symbol(k), c(k)))
@@ -526,7 +526,7 @@ pub fn layout(v: &View) -> (Vec<String>, Order, Option<String>) {
     for x in v
         .rows
         .iter()
-        .filter(|x| x.status != "blocked" && x.status != "working")
+        .filter(|x| matches!(x.status.as_str(), "idle" | "unknown"))
     {
         match ws.iter_mut().find(|(k, _)| *k == x.ws) {
             Some((_, rs)) => rs.push(x),
@@ -535,7 +535,7 @@ pub fn layout(v: &View) -> (Vec<String>, Order, Option<String>) {
     }
     ws.sort_by(|a, b| a.0.cmp(&b.0));
     if !ws.is_empty() {
-        blocks.push(vec![head("■ done / idle", "1")]);
+        blocks.push(vec![head("■ idle / unknown", "1")]);
         for (k, rs) in &ws {
             let name = v
                 .ws_names
@@ -898,24 +898,19 @@ mod tests {
     #[test]
     fn tally_uses_icons_not_words() {
         let rows = [
-            row("a", "done", "p1", None),
             row("b", "idle", "p2", None),
             row("c", "idle", "p3", None),
             row("d", "unknown", "p4", None),
         ];
         let refs: Vec<&Row> = rows.iter().collect();
-        assert_eq!(
-            tally(&refs),
-            "✓ 1  ○ 2  · 1",
-            "文字でなく記号と件数を出すはず"
-        );
-        let tinted = tint_tally(&refs, &["ws  ✓ 1  ○ 2  · 1".to_string()], true).concat();
+        assert_eq!(tally(&refs), "○ 2  · 1", "文字でなく記号と件数を出すはず");
+        let tinted = tint_tally(&refs, &["ws  ○ 2  · 1".to_string()], true).concat();
         assert!(
-            tinted.contains("\x1b[36m✓\x1b[0m") && tinted.contains("\x1b[32m○\x1b[0m"),
+            tinted.contains("\x1b[32m○\x1b[0m") && tinted.contains("\x1b[2m·\x1b[0m"),
             "色ありなら記号が状態の色になるはず: {tinted:?}"
         );
         assert!(
-            !tint_tally(&refs, &["ws  ✓ 1".to_string()], false)
+            !tint_tally(&refs, &["ws  ○ 2  · 1".to_string()], false)
                 .concat()
                 .contains('\x1b'),
             "色なしなら制御文字を出さないはず"
@@ -925,21 +920,21 @@ mod tests {
     #[test]
     fn tint_tally_skips_same_text_in_workspace_name() {
         let rows = [
-            row("a", "done", "p1", None),
+            row("a", "idle", "p1", None),
             row("b", "unknown", "p2", None),
         ];
         let refs: Vec<&Row> = rows.iter().collect();
-        let t = tint_tally(&refs, &["ws ✓ 1 · 10  ✓ 1  · 1".to_string()], true).concat();
+        let t = tint_tally(&refs, &["ws ○ 1 · 10  ○ 1  · 1".to_string()], true).concat();
         assert!(
-            t.starts_with("\x1b[2mws ✓ 1 · 10  "),
+            t.starts_with("\x1b[2mws ○ 1 · 10  "),
             "名前側は塗らないはず: {t:?}"
         );
         assert!(
-            t.contains("\x1b[36m✓\x1b[0m"),
+            t.contains("\x1b[32m○\x1b[0m"),
             "末尾の tally は塗るはず: {t:?}"
         );
         assert_eq!(
-            t.matches("\x1b[36m").count(),
+            t.matches("\x1b[32m").count(),
             1,
             "塗るのは 1 か所のはず: {t:?}"
         );
@@ -948,20 +943,20 @@ mod tests {
     #[test]
     fn tint_tally_skips_wrapped_name_continuation() {
         let rows = [
-            row("a", "done", "p1", None),
+            row("a", "idle", "p1", None),
             row("b", "unknown", "p2", None),
         ];
         let refs: Vec<&Row> = rows.iter().collect();
-        let parts = ["ws ✓ 1".to_string(), "foo ✓ 1  ✓ 1  · 1".to_string()];
+        let parts = ["ws ○ 1".to_string(), "foo ○ 1  ○ 1  · 1".to_string()];
         let t = tint_tally(&refs, &parts, true);
         assert!(
-            t[0].starts_with("\x1b[2mws ✓ 1") && t[1].starts_with("\x1b[2mfoo ✓ 1  "),
+            t[0].starts_with("\x1b[2mws ○ 1") && t[1].starts_with("\x1b[2mfoo ○ 1  "),
             "名前側の記号は塗らないはず: {t:?}"
         );
         assert_eq!(
-            t.concat().matches("\x1b[36m").count(),
+            t.concat().matches("\x1b[32m").count(),
             1,
-            "塗るのは tally の ✓ だけのはず: {t:?}"
+            "緑で塗るのは tally の ○ だけのはず: {t:?}"
         );
         assert!(t[1].contains("\x1b[0m"), "tally の · も塗るはず: {t:?}");
     }
@@ -992,10 +987,12 @@ mod tests {
             "行全体を 1 回で塗り、途中で色を切らないはず: {blocked:?}"
         );
         assert!(
-            lines
-                .iter()
-                .any(|l| l.contains("\x1b[36m✓\x1b[0m") && l.contains("\x1b[32m○\x1b[0m")),
+            lines.iter().any(|l| l.contains("\x1b[32m○\x1b[0m")),
             "畳んだ行は色ありで記号が塗られるはず: {lines:?}"
+        );
+        assert!(
+            lines.iter().all(|l| !l.contains('✓')),
+            "done の pane は畳んだ行に含めないはず: {lines:?}"
         );
         let strip = |s: &str| {
             let mut o = String::new();
