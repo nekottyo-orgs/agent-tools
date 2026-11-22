@@ -1,4 +1,4 @@
-// 目的: herdr の pane を「要対応 / 作業中 / done・idle」の 3 段で一覧し、選んだ pane の Timeline
+// 目的: herdr の pane を「要対応 / 作業中 / idle・unknown」の 3 段で一覧し、選んだ pane の Timeline
 //       (人の指示・他 pane からのメッセージ・PR・inbox の報告) を時刻の降順で出す。
 //       DeepSeek Harness (DSH) の Timeline を参考にした。
 //       --json は全 pane の状態を機械が読める JSON 1 つで出す (常駐・dispatch は hidden 付き)。
@@ -37,7 +37,8 @@ use view::{
 
 const USAGE: &str = "使い方: herdr-timeline [--once] [--interval N] [--width N] [--timeline PANE_ID] [--runs-dir DIR] [--show-resident] [--json] [-h|--help]";
 
-const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3 段で一覧し、pane ごとの Timeline を出す。
+const HELP: &str = "herdr の pane を 要対応 / 作業中 / idle・unknown の 3 段で一覧し、pane ごとの Timeline を出す。
+idle・unknown は workspace ごとの件数。done の pane は一覧から外れ、--timeline と --json で確認できる。
 
 使い方: herdr-timeline [--once] [--interval N] [--width N] [--timeline PANE_ID] [--runs-dir DIR] [--show-resident] [--json] [-h|--help]
 
@@ -48,7 +49,7 @@ const HELP: &str = "herdr の pane を 要対応 / 作業中 / done・idle の 3
   --timeline PANE_ID pane の Timeline を 1 回出して終わる (非対話。常駐の pane も引ける)
   --runs-dir DIR     run のディレクトリ (DIR/<run>/run.md と DIR/<run>/inbox/{new,cur}/*.msg)。
                      環境変数 HERDR_TIMELINE_RUNS_DIR でも渡せる。無ければ報告・進捗・未処理の報告を出さない
-  --show-resident    常駐の pane (watch 系、Cue 専任、review-submit) と監視 skill が起こす PR review の pane は既定で一覧に出さない。これで出す
+  --show-resident    一覧の対象に常駐の pane (watch 系、Cue 専任、review-submit) と監視 skill が起こす PR review の pane を含める
   --json             全 pane の状態を JSON 1 つで出して終わる (--once を含む。--timeline とは併用できない)。
                      常駐・dispatch の pane も hidden 付きで全部出し、hidden は --show-resident で変わらない
   -h, --help         この説明を出す
@@ -227,7 +228,7 @@ impl Seen {
                     } else if p.status == "blocked" {
                         transcript_mtime(dirs, p)
                     } else {
-                        None // 畳んだ行は経過を出さないので stat もしない
+                        None // 経過は要対応と作業中の行だけに出す
                     },
                     approx: working && turn.is_none(),
                     tab_target: p.tab_target.clone(),

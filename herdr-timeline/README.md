@@ -1,12 +1,13 @@
 # herdr-timeline
 
-herdr (端末の multiplexer) の pane を「要対応 / 作業中 / done・idle」の 3 段で一覧し、選んだ pane の Timeline (人の指示、他 pane からのメッセージ、PR、inbox の報告) を新しい順に出す端末 UI。DeepSeek Harness (DSH) の Timeline を参考にした。
+herdr (端末の multiplexer) の pane を「要対応 / 作業中 / idle・unknown」の 3 段で一覧し、選んだ pane の Timeline (人の指示、他 pane からのメッセージ、PR、inbox の報告) を新しい順に出す端末 UI。DeepSeek Harness (DSH) の Timeline を参考にした。
 
 - 要対応: blocked の pane と、inbox/new に未処理の報告がある run。窓口の稼働・不在・状態未確認・終了済みを区別し、稼働中以外の行には run 名と未処理件数を表示する
 - 作業中: working の pane。brief のゴールと step の進捗を要約に出す
-- done / idle: workspace ごとに畳んで件数だけ出す
-- 常駐の pane (Cue の回答を処理する専任 worker、watch 系の監視、watch-worker、review-submit) は既定で一覧に出さない。herdr の API に常駐の印が無いので、pane の label の完全一致で見分ける (一覧は `src/data.rs` の `RESIDENT_LABELS`)。監視 skill の dispatch が起こす PR review の pane (label が `<repo略称>-<PR番号>` / `<repo略称>-bundle-<PR番号>`) も外す。`feat-xxx-34` のような無関係な pane に当たらないよう、label の形と「run に属さない」(inbox の msg が帰属しない、orchestrator_pane でない) の両方で見分け、`--runs-dir` が無いときは外さない。ただし blocked の pane は人の対応待ちなので隠さない。起動直後で最初の報告がまだ無い worker は、label が dispatch の形だと報告が付くまで隠れうる (窓口の orchestrator_pane は外れない)。`--show-resident` で全部出せる
-- 状態の記号と色は herdr 本体の `status_indicators = "symbols"` と同じ (blocked は赤の `×`、working は黄の `◐`、done は青緑の `✓`、idle は緑の `○`、unknown は `·`)。色が出ない端末でも記号の形で区別できる。run の未処理の報告の行頭にある `▲` は pane の状態ではなく別の印なので、そのまま残している
+- idle / unknown は workspace ごとに件数を表示。集計対象があるときだけ見出しを表示
+- done の pane は対話表示と `--once` の一覧から除外。pane の履歴は `--timeline PANE_ID`、状態は `--json`、完了した依頼は Cue の完了一覧で確認
+- 常駐の pane (Cue の回答を処理する専任 worker、watch 系の監視、watch-worker、review-submit) は既定で一覧に出さない。herdr の API に常駐の印が無いので、pane の label の完全一致で見分ける (一覧は `src/data.rs` の `RESIDENT_LABELS`)。監視 skill の dispatch が起こす PR review の pane (label が `<repo略称>-<PR番号>` / `<repo略称>-bundle-<PR番号>`) も外す。`feat-xxx-34` のような無関係な pane に当たらないよう、label の形と「run に属さない」(inbox の msg が帰属しない、orchestrator_pane でない) の両方で見分け、`--runs-dir` が無いときは外さない。ただし blocked の pane は人の対応待ちなので隠さない。起動直後で最初の報告がまだ無い worker は、label が dispatch の形だと報告が付くまで隠れうる (窓口の orchestrator_pane は外れない)。`--show-resident` で常駐・dispatch による除外を解除できる
+- 状態の記号と色は herdr 本体の `status_indicators = "symbols"` と同じ (blocked は赤の `×`、working は黄の `◐`、idle は緑の `○`、unknown は `·`)。色が出ない端末でも記号の形で区別できる。run の未処理の報告は `▲` で表示
 
 ## 読み取り範囲と安全設計
 
@@ -52,7 +53,7 @@ herdr-timeline [--once] [--interval N] [--width N] [--timeline PANE_ID] [--runs-
 | `--width N` | 表示幅を固定する (既定は端末幅 - 1、最小 30、上限 1000) |
 | `--timeline PANE_ID` | pane の Timeline を 1 回出して終わる (非対話)。`<session>/<pane>` でなく pane id だけを渡したときは、今の session の pane を優先し、無ければ他の session から探す |
 | `--runs-dir DIR` | run のディレクトリ (`DIR/<run>/run.md`、`DIR/<run>/inbox/{new,cur}/*.msg`)。無ければ報告・進捗・未処理の報告を出さないだけで動く |
-| `--show-resident` | 常駐の pane (label が `RESIDENT_LABELS` と完全一致) と dispatch の PR review の pane も一覧に出す。`--timeline` では常に出る |
+| `--show-resident` | 常駐の pane (label が `RESIDENT_LABELS` と完全一致) と dispatch の PR review の pane を一覧の対象に含める。`--timeline` では常に出る |
 | `--json` | 全 pane の状態を JSON 1 つで出して終わる (`--once` を含む)。`--timeline` とは併用できない。常駐・dispatch の pane も `hidden` を付けて全部出す (後述) |
 | `-h`, `--help` | 説明を出す |
 
@@ -65,7 +66,7 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 | `HERDR_TIMELINE_PROJECTS` | transcript の projects ディレクトリ (既定 `~/.claude/projects`) |
 | `HERDR_TIMELINE_RUNS_DIR` | `--runs-dir` と同じ |
 | `HERDR_SOCKET_PATH` | 今の session の socket |
-| `HERDR_TIMELINE_CALLER` | 呼び出し元の pane id。起動時に、その pane が要対応か作業中ならその行を選ぶ (done / idle は畳まれていて選べないので既定のまま)。空や不正な値は無視する。表示の初期値だけ |
+| `HERDR_TIMELINE_CALLER` | 呼び出し元の pane id。起動時に、その pane が要対応か作業中ならその行を選ぶ。空や不正な値は無視する。表示の初期値だけ |
 | `NO_COLOR` / `FORCE_COLOR` | 色を消す / tty でなくても色を付ける |
 
 ### 終了コード
@@ -117,8 +118,8 @@ run のディレクトリに既定値は無い。取り込み側が `--runs-dir`
 - socket のパス、transcript のパス、session_id は出さない
 - `--once` との対応 (試験で確かめている)
   - `hidden` が false で status が blocked か working の pane は、`--once` の個別の行と 1 対 1
-  - `hidden` が false で status が done / idle / unknown の pane の数の合計は、`--once` が畳んだ件数の合計と等しい
-  - 全 pane の集合は `--once --show-resident` の集合と等しい
+  - `hidden` が false で status が idle / unknown の pane の数の合計は、`--once` が畳んだ件数の合計と等しい
+  - `--once --show-resident` の個別行と集計の件数の合計は、JSON の done 以外の pane 数と等しい
 
 ## Timeline
 
