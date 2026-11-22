@@ -11,6 +11,7 @@
 | `InboxCore/Proofs.lean`、`InboxCore/Effects.lean` | 生成された `step` / `plan` についての定理と `#print axioms` | 手書き |
 | `InboxCore/Stalled.lean` | 停止の検出 `stalled` の Nat の上の仕様と、生成物がそれに一致することの定理 | 手書き |
 | `InboxCore/Lane.lean` | 再送の段 `resend_step` の定理と、lane の照合 `next_lane` の仕様 `laneSpec`、生成物がそれに一致することと収束の定理 | 手書き |
+| `InboxCore/EndMarker.lean` | `judge` の先頭分岐で終わりの印、判断待ち、既存タスクへの委譲を選ぶ条件 | 手書き |
 | `lib.rs.sha256` | 最後に証明が通った `lib.rs` の sha256 | `regen.sh --update` |
 | `regen.sh` | 生成、生成物との差の検査、`lake build`、合否の判定 | |
 
@@ -90,7 +91,7 @@ CI は `inbox-core/` などの対象変更で、固定した Linux 用ツール�
 
 - `../src/main.rs`: 引数の解析と出力の整形
 - `../src/replace.rs`: worker の差し替えの遷移 `decide`。証明済みの `next_lane` の結果を包み、上限 T の 1 回目と再送の段を使い切った時点 (T を待たない) を差し替えに回し、差し替えと起きた時刻の後に T を数え直す。`lib.rs` を変えないために外に置いた。`cargo test` の `replace::tests` で確かめる
-- `../src/end_marker.rs`: 依頼の種類 `kind` と終わりの印で done と merge 待ちを決める `judge`。`replace::decide` を包み、`lib.rs` の `Rule` を変えないために外に置いた。`cargo test` の `end_marker::tests` で確かめる
+- `../src/end_marker.rs`: `judge` は `replace::decide` を包む。先頭分岐の仕様を `EndMarker.lean` で検査する。`waiting` は外殻が確認した未回答の判断を表し、別の判断の `answered` と併存できる。Rust と仕様の対応、後続の差し替え・マージ待ち判定は `cargo test -p inbox-core` で検査する
 - run-inbox.sh の外殻: ファイルの読み書き、herdr への問い合わせ、送信、mv、複数 msg を全件移すか 0 件にするか、`core_decide` の出力の形の検査と bash の表への fallback、`cue_ready` の拒否
 - 外殻の観測が正しいこと: 送り元の生死 (model の前提 A6)、送信の成功が到達を意味すること (A5)、ヘッダとタグの読み取り
 - model に無いタグ (Info / Conflict / Other)。`step_refines` の仮定 `InModel` の外で、返信要否は herdr-message の語彙に従う
