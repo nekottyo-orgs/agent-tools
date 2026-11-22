@@ -71,7 +71,6 @@ def main():
     source.add_argument("--release", nargs=2, metavar=("TAG", "SHA_FILE"))
     source.add_argument("--commit")
     args = parser.parse_args()
-    timeline = args.timeline.resolve(strict=True)
     evidence = args.evidence.resolve()
     evidence.mkdir(mode=0o700)
     transcript = evidence / "commands.jsonl"
@@ -80,6 +79,18 @@ def main():
         with transcript.open("a") as log:
             log.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    try:
+        verify(args, evidence, record)
+        require(transcript.is_file(), "Evidence check failed")
+    except Exception as error:
+        record({"status": "failed", "error": type(error).__name__, "reason": str(error)})
+        raise
+    record({"status": "passed", "temporary_state_removed": True})
+    print(evidence)
+
+
+def verify(args, evidence, record):
+    timeline = args.timeline.resolve(strict=True)
     sha = hashlib.sha256(timeline.read_bytes()).hexdigest()
     tag, checksum = args.release or (None, None)
     expected = Path(checksum).read_text().split()[0] if checksum else None
@@ -271,9 +282,7 @@ def main():
                 model.shutdown()
                 thread.join()
                 model.server_close()
-    require(not root.exists() and transcript.is_file(), "Cleanup or evidence check failed")
-    record({"status": "passed", "temporary_state_removed": True})
-    print(evidence)
+    require(not root.exists(), "Temporary state was not removed")
 
 
 if __name__ == "__main__":

@@ -110,7 +110,7 @@ cp "$release_dir/release.json" "$evidence_root/$run_id-release/release.json"
 
 候補版は、表示された証跡ディレクトリの `result.json` を最初に読む。`status: passed` と `exit: 0` が揃えば、新規 target の削除を含めて合格。`run_exit` はビルドと検証の終了コード、`cleanup_exit` は target 削除の終了コードで、target 作成前に止まった場合は `null`。失敗時は同じディレクトリの `run.log` でビルド出力と削除エラーを確認する。`result.json` が無ければ完了は未確認。
 
-次に `commands.jsonl` と `herdr.log` を読む。候補版では `runner/` 配下、公開版では証跡ディレクトリ直下にある。`commands.jsonl` に版、SHA、コマンド、標準出力・標準エラー・終了コード、hook の登録、pane・session・rollout・本文、停止結果が残る。タイムアウトや起動失敗時も、対象コマンドと取得済みの出力、失敗理由が残る。`herdr.log` で隔離ソケットと起動を確認できる。`commands.jsonl` の最後の `status: passed` と `temporary_state_removed: true` は、補助スクリプトが隔離環境の片付けまで完了した印。初回試走は TUI のフォーカス、Claude Code の履歴、実アカウントや実モデルを対象としていない。
+次に `commands.jsonl` と `herdr.log` を読む。候補版では `runner/` 配下、公開版では証跡ディレクトリ直下にある。`commands.jsonl` に版、SHA、コマンド、標準出力・標準エラー・終了コード、hook の登録、pane・session・rollout・本文、停止結果が残る。コマンドのタイムアウトや起動失敗時も、対象コマンドと取得済みの出力が残る。待機の期限切れなど、補助スクリプトが失敗して終了した場合は、最後の行の `status: failed` と `reason` を確認する。`herdr.log` で隔離ソケットと起動を確認できる。`commands.jsonl` の最後の `status: passed` と `temporary_state_removed: true` は、補助スクリプトが隔離環境の片付けまで完了した印。初回試走は TUI のフォーカス、Claude Code の履歴、実アカウントや実モデルを対象としていない。
 
 ## 後片付け
 
