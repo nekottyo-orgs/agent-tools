@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.2.4](https://github.com/nekottyo/agent-tools/compare/inbox-core/v0.2.3...inbox-core/v0.2.4) - 2026-11-22
+
+### Changes
+- fix(inbox-core): 非実装タスクの新しい判断待ちを表示する by @nekottyo in https://github.com/nekottyo/agent-tools/pull/63
+
 ## [v0.2.3](https://github.com/nekottyo/agent-tools/compare/inbox-core/v0.2.2...inbox-core/v0.2.3) - 2026-11-21
 
 ### Changes
