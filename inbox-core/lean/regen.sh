@@ -94,11 +94,27 @@ globs = ["Handoff.+"]
 name = "InboxCore"
 globs = ["InboxCore.+"]
 EOF
+# Aeneas の配布物は CI を外して precompileModules を有効にしている。
+# Lake は package 設定の elaboration 結果を保持するので、依存取得から同じ条件で起動する。
+lake_for_release() { env -u CI lake "$@"; }
+
 rc=0
 if [ "${CI:-}" = true ] && [ ! -d "$SPIKE/lean-inbox/.lake/packages/mathlib" ]; then
-  (cd "$TMP/proofs" && MATHLIB_NO_CACHE_ON_UPDATE=1 lake update && lake exe cache get)
+  # 先に取るのは直接 import する依存とその推移閉包。残りの依存は lake build が解決する。
+  cache_roots="$(find "$SPIKE/aeneas/backends/lean/Aeneas" "$SPIKE/aeneas/backends/lean/AeneasMeta" \
+    "$TMP/proofs/Handoff" "$TMP/proofs/InboxCore" -type f -name '*.lean' \
+    -exec awk '/^((public|private|meta)[[:space:]]+)*import[[:space:]]/ {
+      for (i = 1; i <= NF && $i !~ /^(--|\/-)/; i++)
+        if ($i ~ /^(Mathlib|Batteries|Aesop|Qq)(\.|$)/) print $i
+    }' {} + | sort -u)"
+  cache_modules=()
+  while IFS= read -r module; do
+    [ -z "$module" ] || cache_modules+=("$module")
+  done <<<"$cache_roots"
+  (cd "$TMP/proofs" && MATHLIB_NO_CACHE_ON_UPDATE=1 lake_for_release update &&
+    lake_for_release exe cache get "${cache_modules[@]}")
 fi
-(cd "$TMP/proofs" && lake build) >"$TMP/build.log" 2>&1 || rc=$?
+(cd "$TMP/proofs" && lake_for_release build) >"$TMP/build.log" 2>&1 || rc=$?
 if [ "$rc" -eq 0 ]; then tail -n 15 "$TMP/build.log"; else cat "$TMP/build.log"; fi
 
 fail=0

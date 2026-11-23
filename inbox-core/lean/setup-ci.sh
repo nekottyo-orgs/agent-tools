@@ -29,15 +29,21 @@ tar -xzf elan-x86_64-unknown-linux-gnu.tar.gz
 
 # Charon はこの rustc の内部 API を使う。stable は既存の Rust テスト用に保持する。
 rust_toolchain=nightly-2026-09-17
-rustup toolchain install "$rust_toolchain" --profile minimal --component rustc-dev,rust-src
 export ELAN_HOME="$PWD/elan"
 lean_toolchain="$(cat "$proof_dir/lean-toolchain")"
 if [ "$lean_toolchain" != "$(cat aeneas/backends/lean/lean-toolchain)" ]; then
   echo "Pinned Lean toolchain does not match the Aeneas release" >&2
   exit 1
 fi
-./elan-init -y --no-modify-path --default-toolchain "$lean_toolchain"
-"$ELAN_HOME/bin/elan" toolchain install "$lean_toolchain"
+
+# 異なるディレクトリに導入するため、nightly Rust と Lean は並行して展開できる。
+rustup toolchain install "$rust_toolchain" --profile minimal --component rustc-dev,rust-src &
+rust_install=$!
+lean_rc=0
+./elan-init -y --no-modify-path --default-toolchain "$lean_toolchain" &&
+  "$ELAN_HOME/bin/elan" toolchain install "$lean_toolchain" || lean_rc=$?
+wait "$rust_install"
+[ "$lean_rc" -eq 0 ] || exit "$lean_rc"
 # PATH は regen.sh が env.sh を読む時点で展開する。
 # shellcheck disable=SC2016
 printf 'export ELAN_HOME=%q\nexport RUSTUP_TOOLCHAIN=%q\nexport PATH=%q:$PATH\n' \
