@@ -153,6 +153,10 @@ worker は inbox に `tag: progress` の msg を送り、本文の最初の行�
 - progress が 1 通も無ければ「進捗未報告」(0 step 済みとは区別する)
 - brief に無い step 名は済みに数えず、「brief に無い step k 件」と件数だけ出す
 
+## Mac での実機検証
+
+変更時と Mac への反映後は、[実機検証の手順](../.claude/skills/verify-herdr-timeline/SKILL.md) で、隔離した Herdr の Codex pane に送った指示が Timeline に出ることを確認する。公開版の SHA-256 照合、候補版の確認、機能マップ、証跡の保存先は同手順に記載。
+
 ## Lean の model
 
 判定部 (並び順、まとめ、行の分類、帰属、session_id の検証、brief と進捗) は [`lean/HerdrTimeline.lean`](lean/HerdrTimeline.lean) にモデルと性質の証明がある。Rust (`src/core.rs`) は関数の名前と判定をモデルに揃え、一致は `src/core.rs` の `#[cfg(test)]` が同じ入力の例で確かめる。
