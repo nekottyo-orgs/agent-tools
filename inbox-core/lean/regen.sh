@@ -81,6 +81,8 @@ cat >"$TMP/proofs/lakefile.toml" <<EOF
 name = "rust_core"
 defaultTargets = ["Handoff", "InboxCore"]
 packagesDir = "$SPIKE/lean-inbox/.lake/packages"
+# Lake は独立のモジュールを並行処理する。各 Lean プロセスの並列数を抑えて CPU の競合を減らす。
+moreLeanArgs = ["-j2"]
 
 [[require]]
 name = "aeneas"
