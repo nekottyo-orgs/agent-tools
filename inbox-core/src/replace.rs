@@ -20,6 +20,32 @@ pub enum Verdict {
     Move(Move),
 }
 
+// 停止種別 (nekottyo/agents#562)。
+// F1 (Unclaimed: 未着手・未受領) は短い上限、F2 (Started: 着手済みだが無報告) は長い上限で判定する。
+// 仕様と性質は lean/InboxCore/StallCap.lean に置く。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StallKind {
+    Unclaimed,
+    Started,
+}
+
+pub const DEFAULT_UNCLAIMED_CAP_MIN: u64 = 3;
+pub const DEFAULT_STARTED_CAP_MIN: u64 = 15;
+
+pub fn effective_cap_min(kind: StallKind, f1_cap_min: u64, f2_cap_min: u64) -> u64 {
+    match kind {
+        StallKind::Unclaimed => f1_cap_min,
+        StallKind::Started => f2_cap_min,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct StallCap {
+    pub kind: StallKind,
+    pub f1_cap_min: u64,
+    pub f2_cap_min: u64,
+}
+
 pub fn decide(from: Lane, f: TaskFacts, s: StopFacts, now: u64, cap_min: u64) -> Verdict {
     // 数え直し: 差し替え前の検出は新しい worker の停止でなく、起きた時刻より前の検出は起きた時刻から T を数える
     let f = TaskFacts {
@@ -44,6 +70,24 @@ pub fn decide(from: Lane, f: TaskFacts, s: StopFacts, now: u64, cap_min: u64) ->
         }
         None => Verdict::Stay,
     }
+}
+
+pub fn decide_for_kind(
+    from: Lane,
+    f: TaskFacts,
+    s: StopFacts,
+    now: u64,
+    kind: StallKind,
+    f1_cap_min: u64,
+    f2_cap_min: u64,
+) -> Verdict {
+    decide(
+        from,
+        f,
+        s,
+        now,
+        effective_cap_min(kind, f1_cap_min, f2_cap_min),
+    )
 }
 
 #[cfg(test)]
@@ -269,5 +313,122 @@ mod tests {
             ),
             "stay"
         );
+    }
+
+    fn go_kind(from: Lane, f: TaskFacts, s: StopFacts, now: u64, kind: StallKind) -> String {
+        show(decide_for_kind(
+            from,
+            f,
+            s,
+            now,
+            kind,
+            DEFAULT_UNCLAIMED_CAP_MIN,
+            DEFAULT_STARTED_CAP_MIN,
+        ))
+    }
+
+    #[test]
+    fn 停止種別ごとの既定上限は_f1_が_3_分_f2_が_15_分() {
+        assert_eq!(DEFAULT_UNCLAIMED_CAP_MIN, 3);
+        assert_eq!(DEFAULT_STARTED_CAP_MIN, 15);
+        assert_eq!(effective_cap_min(StallKind::Unclaimed, 3, 15), 3);
+        assert_eq!(effective_cap_min(StallKind::Started, 3, 15), 15);
+        let d = 50_000u64;
+        // F1 (unclaimed): 179 秒は stay、180 秒 (3 分) で replace
+        assert_eq!(
+            go_kind(Lane::Worker, stalled_at(d), FRESH, d + 179, StallKind::Unclaimed),
+            "stay"
+        );
+        assert_eq!(
+            go_kind(Lane::Worker, stalled_at(d), FRESH, d + 180, StallKind::Unclaimed),
+            "replace"
+        );
+        // F2 (started): 180 秒・899 秒は stay、900 秒 (15 分) で replace
+        assert_eq!(
+            go_kind(Lane::Worker, stalled_at(d), FRESH, d + 180, StallKind::Started),
+            "stay"
+        );
+        assert_eq!(
+            go_kind(Lane::Worker, stalled_at(d), FRESH, d + 899, StallKind::Started),
+            "stay"
+        );
+        assert_eq!(
+            go_kind(Lane::Worker, stalled_at(d), FRESH, d + 900, StallKind::Started),
+            "replace"
+        );
+    }
+
+    #[test]
+    fn 停止種別別上限でも_sleep_除外と差し替え後の数え直しが効く() {
+        let d = 10_000u64;
+        let woke = 50_000u64;
+        let s_wake = StopFacts {
+            woke_at: woke,
+            ..FRESH
+        };
+        // F1 は woke + 180 秒まで抑止、F2 は woke + 900 秒まで抑止
+        assert_eq!(
+            go_kind(Lane::Worker, stalled_at(d), s_wake, woke + 179, StallKind::Unclaimed),
+            "stay"
+        );
+        assert_eq!(
+            go_kind(Lane::Worker, stalled_at(d), s_wake, woke + 180, StallKind::Unclaimed),
+            "replace"
+        );
+        assert_eq!(
+            go_kind(Lane::Worker, stalled_at(d), s_wake, woke + 899, StallKind::Started),
+            "stay"
+        );
+        assert_eq!(
+            go_kind(Lane::Worker, stalled_at(d), s_wake, woke + 900, StallKind::Started),
+            "replace"
+        );
+
+        // 差し替え済み: 古い検出は無効、新しい検出は 2 回目として human_action へ
+        let s_rep = StopFacts {
+            replaced_at: 60_000,
+            ..FRESH
+        };
+        assert_eq!(
+            go_kind(Lane::Worker, stalled_at(60_000), s_rep, 90_000, StallKind::Unclaimed),
+            "stay"
+        );
+        assert_eq!(
+            go_kind(Lane::Worker, stalled_at(60_001), s_rep, 60_001 + 179, StallKind::Unclaimed),
+            "stay"
+        );
+        assert_eq!(
+            go_kind(Lane::Worker, stalled_at(60_001), s_rep, 60_001 + 180, StallKind::Unclaimed),
+            STALL_CAP_HA
+        );
+        assert_eq!(
+            go_kind(Lane::Worker, stalled_at(60_001), s_rep, 60_001 + 899, StallKind::Started),
+            "stay"
+        );
+        assert_eq!(
+            go_kind(Lane::Worker, stalled_at(60_001), s_rep, 60_001 + 900, StallKind::Started),
+            STALL_CAP_HA
+        );
+    }
+
+    #[test]
+    fn f1_と_f2_に同じ上限を渡すと単一上限の_decide_と一致する() {
+        let d = NOW - CAP * 60;
+        for kind in [StallKind::Unclaimed, StallKind::Started] {
+            for dt in [d, d + 1] {
+                assert_eq!(
+                    show(decide_for_kind(
+                        Lane::Worker,
+                        stalled_at(dt),
+                        FRESH,
+                        NOW,
+                        kind,
+                        CAP,
+                        CAP
+                    )),
+                    go(Lane::Worker, stalled_at(dt), FRESH, NOW)
+                );
+            }
+        }
     }
 }
