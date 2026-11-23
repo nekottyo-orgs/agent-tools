@@ -32,19 +32,20 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        run: rustup toolchain install 1.98 --profile minimal --component clippy && rustup default 1.98
+      - name: Install toolchains
+        run: |
+          AENEAS_SPIKE="$RUNNER_TEMP/inbox-core-lean" bash inbox-core/lean/setup-ci.sh &
+          formal_setup=$!
+          stable_rc=0
+          rustup toolchain install 1.98 --profile minimal --component clippy || stable_rc=$?
+          wait "$formal_setup"
+          exit "$stable_rc"
 
       - name: Lint
-        run: cargo clippy --locked -p inbox-core --all-targets -- -D warnings
+        run: cargo +1.98 clippy --locked -p inbox-core --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --locked -p inbox-core
-
-      - name: Install formal verification toolchain
-        env:
-          AENEAS_SPIKE: ${{ runner.temp }}/inbox-core-lean
-        run: bash inbox-core/lean/setup-ci.sh
+        run: cargo +1.98 test --locked -p inbox-core
 
       - name: Regenerate Lean and check proofs
         env:
