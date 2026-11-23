@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.2.5](https://github.com/nekottyo/agent-tools/compare/inbox-core/v0.2.4...inbox-core/v0.2.5) - 2026-11-23
+
+### Changes
+- refactor(inbox-core): lane の出力整形を共通化する by @nekottyo in https://github.com/nekottyo/agent-tools/pull/74
+- feat(inbox-core): 停止種別ごとの上限 T (F1=3分 / F2=15分) を追加する by @nekottyo in https://github.com/nekottyo/agent-tools/pull/85
+
 ## [v0.2.4](https://github.com/nekottyo/agent-tools/compare/inbox-core/v0.2.3...inbox-core/v0.2.4) - 2026-11-22
 
 ### Changes

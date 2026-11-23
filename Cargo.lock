@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "inbox-core"
-version = "0.2.4"
+version = "0.2.5"
 
 [[package]]
 name = "itoa"
