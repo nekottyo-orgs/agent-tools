@@ -117,6 +117,7 @@ if [ "${CI:-}" = true ] && [ ! -x "$SPIKE/lean-inbox/.lake/packages/mathlib/.lak
     lake_for_release exe cache get "${cache_modules[@]}")
 fi
 (cd "$TMP/proofs" && lake_for_release build) >"$TMP/build.log" 2>&1 || rc=$?
+awk '/ Built (Handoff|InboxCore)\./' "$TMP/build.log"
 if [ "$rc" -eq 0 ]; then tail -n 15 "$TMP/build.log"; else cat "$TMP/build.log"; fi
 
 fail=0
