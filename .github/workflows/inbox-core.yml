@@ -26,28 +26,34 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      - name: Install toolchains
-        run: |
-          AENEAS_SPIKE="$RUNNER_TEMP/inbox-core-lean" bash inbox-core/lean/setup-ci.sh &
-          formal_setup=$!
-          stable_rc=0
-          rustup toolchain install 1.98 --profile minimal --component clippy || stable_rc=$?
-          wait "$formal_setup"
-          exit "$stable_rc"
+      - name: Install formal verification toolchain
+        env:
+          AENEAS_SPIKE: ${{ runner.temp }}/inbox-core-lean
+        run: bash inbox-core/lean/setup-ci.sh
+
+      - name: Regenerate Lean and check proofs
+        env:
+          AENEAS_SPIKE: ${{ runner.temp }}/inbox-core-lean
+        run: bash inbox-core/lean/regen.sh
+
+  rust-x86:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup toolchain install 1.98 --profile minimal --component clippy
 
       - name: Lint
         run: cargo +1.98 clippy --locked -p inbox-core --all-targets -- -D warnings
 
       - name: Test
         run: cargo +1.98 test --locked -p inbox-core
-
-      - name: Regenerate Lean and check proofs
-        env:
-          AENEAS_SPIKE: ${{ runner.temp }}/inbox-core-lean
-        run: bash inbox-core/lean/regen.sh
