@@ -46,6 +46,13 @@ jobs:
           AENEAS_SPIKE: ${{ runner.temp }}/inbox-core-lean
         run: bash inbox-core/lean/setup-ci.sh
 
+      - name: Restore Lean dependencies
+        uses: actions/cache@v6.1.0
+        with:
+          # 依存だけを復元し、この checkout の生成物と証明は毎回検査する。
+          path: ${{ runner.temp }}/inbox-core-lean/lean-inbox/.lake/packages
+          key: inbox-core-lean-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('inbox-core/lean/lean-toolchain', 'inbox-core/lean/setup-ci.sh', 'inbox-core/lean/regen.sh') }}
+
       - name: Regenerate Lean and check proofs
         env:
           AENEAS_SPIKE: ${{ runner.temp }}/inbox-core-lean
