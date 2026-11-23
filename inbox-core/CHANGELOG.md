@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.2.6](https://github.com/nekottyo/agent-tools/compare/inbox-core/v0.2.5...inbox-core/v0.2.6) - 2026-11-23
+
+### Changes
+- ci(inbox-core): 配布済み Lean 依存を再利用する by @nekottyo in https://github.com/nekottyo/agent-tools/pull/87
+- ci(inbox-core): 依存取得を並行化して証明を速くする by @nekottyo in https://github.com/nekottyo/agent-tools/pull/90
+- ci(inbox-core): ARM64 で証明し x86_64 で回帰を検査する by @nekottyo in https://github.com/nekottyo/agent-tools/pull/92
+
 ## [v0.2.5](https://github.com/nekottyo/agent-tools/compare/inbox-core/v0.2.4...inbox-core/v0.2.5) - 2026-11-23
 
 ### Changes
