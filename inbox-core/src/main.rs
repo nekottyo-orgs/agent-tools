@@ -15,17 +15,20 @@ const USAGE: &str = "使い方: inbox-core <op> <tag> <box> <sender> <header> <s
   header: valid | invalid (ack-sender-gone と reply だけが読む)
   sent:   yes | no (reply だけが読む)
 出力: 1 行目 moved <box> <res> | unchanged | refused <理由>、2 行目以降 effect <副作用>
-  inbox-core lane <from> <panes> <idle> <working> <close_failed> <accepted> <req_accepted> <remaining> <waiting> <answered> <detected> <detected_at> <seen> <cleared> <replaced_at> <woke_at> <exhausted> <now> <cap_min> [<kind> <marker> <ci_green> <other_org>]
+  inbox-core lane <from> <panes> <idle> <working> <close_failed> <accepted> <req_accepted> <remaining> <waiting> <answered> <detected> <detected_at> <seen> <cleared> <replaced_at> <woke_at> <exhausted> <now> <cap_min> [<kind> <marker> <ci_green> <other_org> [<stall_kind> <f1_cap_min> <f2_cap_min>]]
     replaced_at: 差し替えた時刻 (0 は未差し替え)  woke_at: 起きた時刻 (0 は無し)  exhausted: 再送の段を使い切った (bool)
     kind (任意の末尾 4 引数。20 個なら従来どおり、24 個なら kind を使う): unset|decision|monitor|research|implement
       marker: その kind の終わりの印が成り立つ (implement は PR が merge 済み)  ci_green: PR の CI が通っている  other_org: PR の repo が自分の org でない (bool)
+    stall_kind (さらに任意の末尾 3 引数。27 個なら停止種別別の上限を cap_min の代わりに使う): unclaimed|started
     出力: none | replace | move <rule> <dest> | move end-marker done | move merge-wait human_action
     from: todo|worker|human_decision|human_action|done  panes: unknown|absent|closed|live  remaining: empty|nothing|other  bool: yes|no  数値: 10 進 (2^40 未満)
+  inbox-core stall-cap <stall_kind> [<f1_cap_min> <f2_cap_min>]
+    stall_kind: unclaimed|started (上限省略時は既定の F1=3 / F2=15 分)  出力: 実効上限 (分)
   inbox-core stalled <idle> <report> <assign> <now> <min>
     出力: active | due <時刻> | stalled report | stalled assign
   inbox-core resend <tried> <last_nudge> <nudge_sent> <blocked> <agent> <rc> <input> <own> <pasted> <delivered> <overdue>
     input: empty|draft|unknown  出力: 1a | 1b:<理由> | nudge | block:<理由> | exhausted | none
-  inbox-core batch   (stdin の各行が lane / stalled / resend の引数列。誤りの行番号を stderr に出して exit 2)";
+  inbox-core batch   (stdin の各行が lane / stall-cap / stalled / resend の引数列。誤りの行番号を stderr に出して exit 2)";
 
 fn tag(s: &str) -> Tag {
     match s {
@@ -195,9 +198,30 @@ fn rule_name(r: Rule) -> &'static str {
     }
 }
 
+fn stall_kind(s: &str) -> Option<replace::StallKind> {
+    Some(match s {
+        "unclaimed" => replace::StallKind::Unclaimed,
+        "started" => replace::StallKind::Started,
+        _ => return None,
+    })
+}
+
+fn run_stall_cap(a: &[String]) -> Option<String> {
+    let (kind, f1, f2) = match a.len() {
+        2 => (
+            stall_kind(&a[1])?,
+            replace::DEFAULT_UNCLAIMED_CAP_MIN,
+            replace::DEFAULT_STARTED_CAP_MIN,
+        ),
+        4 => (stall_kind(&a[1])?, num(&a[2])?, num(&a[3])?),
+        _ => return None,
+    };
+    Some(replace::effective_cap_min(kind, f1, f2).to_string())
+}
+
 fn run_lane(a: &[String]) -> Option<String> {
-    // 20 個は従来形、24 個は末尾に <kind> <marker> <ci_green> <other_org> を足した形
-    if a.len() != 20 && a.len() != 24 {
+    // 20 個は従来形、24 個は末尾に <kind> <marker> <ci_green> <other_org>、27 個はさらに <stall_kind> <f1_cap_min> <f2_cap_min> を足した形
+    if a.len() != 20 && a.len() != 24 && a.len() != 27 {
         return None;
     }
     let from = lane(&a[1])?;
@@ -255,7 +279,17 @@ fn run_lane(a: &[String]) -> Option<String> {
         ci_green: yn(&a[22])?,
         other_org: yn(&a[23])?,
     };
-    Some(render_lane(end_marker::judge(from, f, s, now, cap, k)))
+    if a.len() == 24 {
+        return Some(render_lane(end_marker::judge(from, f, s, now, cap, k)));
+    }
+    let stall_cap = replace::StallCap {
+        kind: stall_kind(&a[24])?,
+        f1_cap_min: num(&a[25])?,
+        f2_cap_min: num(&a[26])?,
+    };
+    Some(render_lane(end_marker::judge_for_kind(
+        from, f, s, now, stall_cap, k,
+    )))
 }
 
 fn render_lane(verdict: end_marker::Verdict) -> String {
@@ -348,10 +382,11 @@ fn run_resend(a: &[String]) -> Option<String> {
     })
 }
 
-// lane / stalled / resend の 1 行分。第 1 引数がそれ以外なら None
+// lane / stall-cap / stalled / resend の 1 行分。第 1 引数がそれ以外なら None
 fn run_extra(a: &[String]) -> Option<String> {
     match a.first().map(String::as_str) {
         Some("lane") => run_lane(a),
+        Some("stall-cap") => run_stall_cap(a),
         Some("stalled") => run_stalled(a),
         Some("resend") => run_resend(a),
         _ => None,
@@ -382,7 +417,7 @@ fn main() {
         return;
     }
     match a.first().map(String::as_str) {
-        Some("lane" | "stalled" | "resend") => match run_extra(&a) {
+        Some("lane" | "stall-cap" | "stalled" | "resend") => match run_extra(&a) {
             Some(s) => println!("{s}"),
             None => usage_exit(),
         },
@@ -602,12 +637,29 @@ mod tests {
                 .unwrap(),
             "move waiting human_decision"
         );
-        // 引数の数: 20 と 24 だけ
-        for n in [21, 22, 23, 25] {
-            let extra_args = ["implement", "no", "no", "no", "no"];
+        // 引数の数: 20・24・27 だけ
+        for n in [21, 22, 23, 25, 26, 28] {
+            let extra_args = ["implement", "no", "no", "no", "unclaimed", "3", "15", "0"];
             let s = format!("{base} {}", extra_args[..n - 20].join(" "));
             assert!(extra(&s).is_none(), "{n} 引数は誤り");
         }
+        // 新形式 (27 引数): 末尾 3 引数 <stall_kind> <f1_cap_min> <f2_cap_min>
+        let stalled_f1 =
+            "lane worker live yes no no no no other no no yes 99820 yes no 0 0 no 100000 30 implement no no no";
+        // 従来 24 引数では cap_min=30 なので 180 秒経過しても none
+        assert_eq!(extra(stalled_f1).unwrap(), "none");
+        // 27 引数では F1 (unclaimed=3 分) は 180 秒で replace、F2 (started=15 分) は none
+        assert_eq!(
+            extra(&format!("{stalled_f1} unclaimed 3 15")).unwrap(),
+            "replace"
+        );
+        assert_eq!(
+            extra(&format!("{stalled_f1} started 3 15")).unwrap(),
+            "none"
+        );
+        // 27 引数の語彙外・数値誤り
+        assert!(extra(&format!("{stalled_f1} bogus 3 15")).is_none());
+        assert!(extra(&format!("{stalled_f1} unclaimed -1 15")).is_none());
         // 新形式の語彙外
         assert!(extra(&format!("{base} nokind no no no")).is_none());
         assert!(extra(&format!("{base} implement maybe no no")).is_none());
@@ -617,6 +669,19 @@ mod tests {
         assert!(extra(&base.replace("100000", "1099511627776")).is_none());
         assert!(extra(&base.replace("100000", "-1")).is_none());
         assert!(extra("lane todo").is_none());
+    }
+
+    #[test]
+    fn stall_cap_cmd() {
+        assert_eq!(extra("stall-cap unclaimed").unwrap(), "3");
+        assert_eq!(extra("stall-cap started").unwrap(), "15");
+        assert_eq!(extra("stall-cap unclaimed 5 20").unwrap(), "5");
+        assert_eq!(extra("stall-cap started 5 20").unwrap(), "20");
+        assert!(extra("stall-cap").is_none());
+        assert!(extra("stall-cap bogus").is_none());
+        assert!(extra("stall-cap unclaimed 3").is_none());
+        assert!(extra("stall-cap unclaimed 3 15 99").is_none());
+        assert!(extra("stall-cap unclaimed x 15").is_none());
     }
 
     #[test]
@@ -671,8 +736,11 @@ mod tests {
 
     #[test]
     fn batch_cmd() {
-        let ok = run_batch("stalled no 1 2 3 4\n\n  stalled yes 1000 0 1000 10\n").unwrap();
-        assert_eq!(ok, ["active", "due 1600"]);
+        let ok = run_batch(
+            "stalled no 1 2 3 4\n\n  stalled yes 1000 0 1000 10\nstall-cap unclaimed\nstall-cap started 4 20\nlane worker live yes no no no no other no no yes 99820 yes no 0 0 no 100000 30 unset no no no unclaimed 3 15\n",
+        )
+        .unwrap();
+        assert_eq!(ok, ["active", "due 1600", "3", "20", "replace"]);
         assert_eq!(run_batch("stalled no 1 2 3 4\n\nbogus\n").unwrap_err(), 3);
     }
 

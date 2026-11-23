@@ -12,6 +12,7 @@
 | `InboxCore/Stalled.lean` | 停止の検出 `stalled` の Nat の上の仕様と、生成物がそれに一致することの定理 | 手書き |
 | `InboxCore/Lane.lean` | 再送の段 `resend_step` の定理と、lane の照合 `next_lane` の仕様 `laneSpec`、生成物がそれに一致することと収束の定理 | 手書き |
 | `InboxCore/EndMarker.lean` | `judge` の先頭分岐で終わりの印、判断待ち、既存タスクへの委譲を選ぶ条件 | 手書き |
+| `InboxCore/StallCap.lean` | 停止種別ごとの上限 T 分離 (`F1=3分` / `F2=15分`)、Mac sleep 除外、差し替え後の数え直し、1 回目差し替え / 2 回目人待ちの仕様と定理 | 手書き |
 | `lib.rs.sha256` | 最後に証明が通った `lib.rs` の sha256 | `regen.sh --update` |
 | `regen.sh` | 生成、生成物との差の検査、`lake build`、合否の判定 | |
 
@@ -22,6 +23,7 @@
 ```bash
 bash inbox-core/lean/regen.sh           # 生成して commit 済みと比べ、lake build と axioms を確かめる
 bash inbox-core/lean/regen.sh --update  # 生成物と lib.rs.sha256 を書き換える
+lean inbox-core/lean/InboxCore/StallCap.lean  # StallCap.lean 単体の型検査・公理確認 (Aeneas 不要)
 ```
 
 Aeneas / Charon / Lean の nightly は `AENEAS_SPIKE` (既定 `$HOME/.local/share/aeneas-spike`) の隔離環境を使い、本番の cargo と mise の設定には触れない。Mathlib と Aeneas の Lean ライブラリはそこの取得済みのものを指す。環境が無ければ「未実行」と出して終わる。
@@ -70,7 +72,16 @@ CI は `inbox-core/` などの対象変更で、固定した Linux 用ツール�
 - `laneTrace_rank_le`、`laneTrace_nodup`、`laneTrace_stops`: 真に減る順位があれば、繰り返しの列は重ならず、順位以上の回数で止まる
 - `ite_ok`: `next_lane_refines` が使う、`if c then ok a else ok b = ok (if c then a else b)`
 
-この範囲に公平性と有限性の前提は無い (`stalled` と `next_lane` は 1 回の判定で、時間の経過を扱わない。`next_lane` の収束は事実を固定した繰り返しについての主張)。
+`StallCap.lean` (`InboxProofs.StallCap`) は、`lib.rs` の外にある `replace::decide_for_kind` の停止種別別上限 T (F1 `unclaimed` = 3 分 / F2 `started` = 15 分)、Mac sleep 除外 (`wokeAt`)、差し替え後の数え直し (`replacedAt`) を Nat の上で仕様化し、16 本の公開定理 (`sorry` なし、非自明な 12 本の `#print axioms` は `propext` / `Classical.choice` / `Quot.sound` のみ) を示す。前提は「時刻と分数の加算が `u64` で溢れないこと (CLI の `num` は `2^40` 未満に制限)」「外殻が `stall_kind` / `woke_at` / `replaced_at` を正しく渡すこと」であり、Rust 実装との一致は `../tests/stall_cap.rs` の全数・境界差分テストで照合する。
+
+- `effectiveCap_unclaimed`、`effectiveCap_started`、`default_f1_lt_f2`: F1 (`unclaimed`) と F2 (`started`) の実効上限の選択と、既定値 3 分 < 15 分
+- `sleep_excludes_over`、`sleep_excludes_move`、`sleep_excludes_replace`: `now < wokeAt + effectiveCap kind f1Cap f2Cap * 60` なら `detectedAt` がどれだけ古くても停止上限は発火せず、`StallCap` 遷移 (および未枯渇時の `replace`) を起こさない
+- `recount_ignores_old`、`recount_blocks_over`、`recount_blocks_stall`: 差し替え済み (`0 < replacedAt`) で `detectedAt ≤ replacedAt` の古い検出は無効化され、`replace` も `StallCap` 遷移も起こさない
+- `first_stall_replaces`、`second_stall_human`、`no_second_replace`: 1 回目の停止 (`replacedAt = 0`) は `StallCap` を `replace` に振り、2 回目の停止 (`0 < replacedAt`) は `humanAction` へ移し二度と `replace` を返さない
+- `legacy_cap_compat`、`legacy_decide_compat`: `f1Cap = f2Cap = cap` のとき、すべての `StallKind` で単一上限 `cap` の判定と一致する
+- `f1_before_f2`、`default_f1_at_3min`: `f1Cap < f2Cap` (既定 3 分 / 15 分) のとき、`max detectedAt wokeAt + f1Cap * 60` (既定 +180 秒) で F1 だけが上限に達し F2 は未到達になる
+
+この範囲に公平性と有限性の前提は無い (`stalled` と `next_lane` と `decideSpec` は 1 回の判定で、時間の経過を扱わない。`next_lane` の収束は事実を固定した繰り返しについての主張)。
 
 ## 前提の名前
 
@@ -90,8 +101,8 @@ CI は `inbox-core/` などの対象変更で、固定した Linux 用ツール�
 ## 証明の外
 
 - `../src/main.rs`: 引数の解析と出力の整形
-- `../src/replace.rs`: worker の差し替えの遷移 `decide`。証明済みの `next_lane` の結果を包み、上限 T の 1 回目と再送の段を使い切った時点 (T を待たない) を差し替えに回し、差し替えと起きた時刻の後に T を数え直す。`lib.rs` を変えないために外に置いた。`cargo test` の `replace::tests` で確かめる
-- `../src/end_marker.rs`: `judge` は `replace::decide` を包む。先頭分岐の仕様を `EndMarker.lean` で検査する。`waiting` は外殻が確認した未回答の判断を表し、別の判断の `answered` と併存できる。Rust と仕様の対応、後続の差し替え・マージ待ち判定は `cargo test -p inbox-core` で検査する
+- `../src/replace.rs`: worker の差し替えの遷移 `decide` / `decide_for_kind` と実効上限 `effective_cap_min`。証明済みの `next_lane` の結果を包み、上限 T の 1 回目と再送の段を使い切った時点 (T を待たない) を差し替えに回し、差し替えと起きた時刻の後に T を数え直す。`lib.rs` を変えないために外に置き、停止種別別上限と sleep 除外・数え直しの仕様は `InboxCore/StallCap.lean` で形式化し、Rust との一致は `cargo test -p inbox-core` (`replace::tests` および `tests/stall_cap.rs`) で確かめる
+- `../src/end_marker.rs`: `judge` / `judge_for_kind` は `replace::decide` / `replace::decide_for_kind` を包む。先頭分岐の仕様を `EndMarker.lean` で検査する。`waiting` は外殻が確認した未回答の判断を表し、別の判断の `answered` と併存できる。Rust と仕様の対応、後続の差し替え・マージ待ち判定は `cargo test -p inbox-core` で検査する
 - run-inbox.sh の外殻: ファイルの読み書き、herdr への問い合わせ、送信、mv、複数 msg を全件移すか 0 件にするか、`core_decide` の出力の形の検査と bash の表への fallback、`cue_ready` の拒否
 - 外殻の観測が正しいこと: 送り元の生死 (model の前提 A6)、送信の成功が到達を意味すること (A5)、ヘッダとタグの読み取り
 - model に無いタグ (Info / Conflict / Other)。`step_refines` の仮定 `InModel` の外で、返信要否は herdr-message の語彙に従う

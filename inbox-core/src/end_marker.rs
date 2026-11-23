@@ -98,6 +98,35 @@ pub fn judge(
     }
 }
 
+pub fn judge_for_kind(
+    from: Lane,
+    f: TaskFacts,
+    s: StopFacts,
+    now: u64,
+    cap: replace::StallCap,
+    k: KindFacts,
+) -> Verdict {
+    if k.kind == Kind::Unset {
+        return wrap(replace::decide_for_kind(
+            from,
+            f,
+            s,
+            now,
+            cap.kind,
+            cap.f1_cap_min,
+            cap.f2_cap_min,
+        ));
+    }
+    judge(
+        from,
+        f,
+        s,
+        now,
+        replace::effective_cap_min(cap.kind, cap.f1_cap_min, cap.f2_cap_min),
+        k,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -533,6 +562,99 @@ mod tests {
         assert_eq!(
             go(Lane::Worker, f, kf(Kind::Research)),
             plain(Lane::Worker, f)
+        );
+    }
+
+    #[test]
+    fn judge_for_kind_は停止種別ごとの上限を適用し_unset_と一致する() {
+        let d = 50_000u64;
+        let f = TaskFacts {
+            idle: true,
+            working: false,
+            detected: true,
+            detected_at: d,
+            seen: true,
+            ..base()
+        };
+        let cap = |kind| replace::StallCap {
+            kind,
+            f1_cap_min: 3,
+            f2_cap_min: 15,
+        };
+        // F1=3 分で 180 秒後に replace、F2=15 分は 180 秒では stay・900 秒で replace
+        assert_eq!(
+            show(judge_for_kind(
+                Lane::Worker,
+                f,
+                FRESH,
+                d + 180,
+                cap(replace::StallKind::Unclaimed),
+                kf(Kind::Implement)
+            )),
+            "replace"
+        );
+        assert_eq!(
+            show(judge_for_kind(
+                Lane::Worker,
+                f,
+                FRESH,
+                d + 180,
+                cap(replace::StallKind::Started),
+                kf(Kind::Implement)
+            )),
+            "stay"
+        );
+        assert_eq!(
+            show(judge_for_kind(
+                Lane::Worker,
+                f,
+                FRESH,
+                d + 900,
+                cap(replace::StallKind::Started),
+                kf(Kind::Implement)
+            )),
+            "replace"
+        );
+        // Unset は decide_for_kind と完全一致
+        for kind in [replace::StallKind::Unclaimed, replace::StallKind::Started] {
+            for now in [d + 179, d + 180, d + 899, d + 900] {
+                assert_eq!(
+                    show(judge_for_kind(
+                        Lane::Worker,
+                        f,
+                        FRESH,
+                        now,
+                        cap(kind),
+                        kf(Kind::Unset)
+                    )),
+                    show(wrap(replace::decide_for_kind(
+                        Lane::Worker,
+                        f,
+                        FRESH,
+                        now,
+                        kind,
+                        3,
+                        15
+                    )))
+                );
+            }
+        }
+        // 報告済み (SettleDone 相当) の implement は F1 上限を越えても replace / stall-cap しない
+        let reported_f = TaskFacts {
+            req_accepted: true,
+            remaining: Remaining::Nothing,
+            ..f
+        };
+        assert_eq!(
+            show(judge_for_kind(
+                Lane::Worker,
+                reported_f,
+                FRESH,
+                d + 180,
+                cap(replace::StallKind::Unclaimed),
+                kf(Kind::Implement)
+            )),
+            "stay"
         );
     }
 }
