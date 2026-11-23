@@ -99,7 +99,7 @@ EOF
 lake_for_release() { env -u CI lake "$@"; }
 
 rc=0
-if [ "${CI:-}" = true ] && [ ! -d "$SPIKE/lean-inbox/.lake/packages/mathlib" ]; then
+if [ "${CI:-}" = true ] && [ ! -x "$SPIKE/lean-inbox/.lake/packages/mathlib/.lake/build/bin/cache" ]; then
   # 先に取るのは直接 import する依存とその推移閉包。残りの依存は lake build が解決する。
   cache_roots="$(find "$SPIKE/aeneas/backends/lean/Aeneas" "$SPIKE/aeneas/backends/lean/AeneasMeta" \
     "$TMP/proofs/Handoff" "$TMP/proofs/InboxCore" -type f -name '*.lean' \

@@ -32,28 +32,44 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        run: rustup toolchain install 1.98 --profile minimal --component clippy && rustup default 1.98
+      - name: Restore Lean dependencies
+        id: lean-deps
+        uses: actions/cache/restore@v6.1.0
+        with:
+          # 形式検証を通過した default branch の依存だけを使う。
+          path: ${{ runner.temp }}/inbox-core-lean/lean-inbox/.lake/packages
+          key: inbox-core-lean-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('inbox-core/lean/lean-toolchain', 'inbox-core/lean/setup-ci.sh', 'inbox-core/lean/regen.sh') }}
+
+      - name: Discard a non-exact dependency cache
+        if: steps.lean-deps.outputs.cache-hit != 'true'
+        run: rm -rf -- "$RUNNER_TEMP/inbox-core-lean/lean-inbox/.lake/packages"
+
+      - name: Install toolchains
+        run: |
+          AENEAS_SPIKE="$RUNNER_TEMP/inbox-core-lean" bash inbox-core/lean/setup-ci.sh &
+          formal_setup=$!
+          stable_rc=0
+          rustup toolchain install 1.98 --profile minimal --component clippy || stable_rc=$?
+          wait "$formal_setup"
+          exit "$stable_rc"
 
       - name: Lint
-        run: cargo clippy --locked -p inbox-core --all-targets -- -D warnings
+        run: cargo +1.98 clippy --locked -p inbox-core --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --locked -p inbox-core
-
-      - name: Install formal verification toolchain
-        env:
-          AENEAS_SPIKE: ${{ runner.temp }}/inbox-core-lean
-        run: bash inbox-core/lean/setup-ci.sh
-
-      - name: Restore Lean dependencies
-        uses: actions/cache@v6.1.0
-        with:
-          # 依存だけを復元し、この checkout の生成物と証明は毎回検査する。
-          path: ${{ runner.temp }}/inbox-core-lean/lean-inbox/.lake/packages
-          key: inbox-core-lean-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('inbox-core/lean/lean-toolchain', 'inbox-core/lean/setup-ci.sh', 'inbox-core/lean/regen.sh') }}
+        run: cargo +1.98 test --locked -p inbox-core
 
       - name: Regenerate Lean and check proofs
         env:
           AENEAS_SPIKE: ${{ runner.temp }}/inbox-core-lean
         run: bash inbox-core/lean/regen.sh
+
+      - name: Save verified Lean dependencies
+        if: >-
+          success() && steps.lean-deps.outputs.cache-hit != 'true' &&
+          github.event_name == 'push' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ runner.temp }}/inbox-core-lean/lean-inbox/.lake/packages
+          key: ${{ steps.lean-deps.outputs.cache-primary-key }}

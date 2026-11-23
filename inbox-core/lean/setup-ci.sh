@@ -18,11 +18,36 @@ download() {
 
 release=https://github.com/AeneasVerif/aeneas/releases/download/nightly-2026.11.19-8f4466d
 download "$release/aeneas-linux-x86_64.tar.gz" 00d4e95028bc5e27c0b4c3195079a421a9ac68f3e3d92c5e6260871e827d0be6
-download "$release/lean-build-aeneas-x86_64-unknown-linux-gnu.tar.gz" 84896c4bc46d93c87e0e4cfb09b602d0e94b60b7fb9373871d70244b9a49d525
-download https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz 42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
-
 mkdir -p aeneas lean-inbox/.lake
 tar -xzf aeneas-linux-x86_64.tar.gz -C aeneas
+
+# 固定した配布物の manifest を使い、Lake に先立って独立した Git 取得を進める。
+fetch_package() {
+  local pkg="$1" url="$2" rev="$3"
+  git init --quiet "$pkg" &&
+    git -C "$pkg" remote add origin "$url" &&
+    git -C "$pkg" fetch --quiet --no-tags --depth 1 origin "$rev" &&
+    git -C "$pkg" checkout --quiet --detach "$rev"
+}
+
+packages=lean-inbox/.lake/packages
+fetches=()
+if [ ! -d "$packages" ]; then
+  manifest_rows="$(jq -er '.packages[] |
+    if .type == "git" and (.name | test("^[a-zA-Z0-9_-]+$")) and
+       (.url | startswith("https://github.com/")) and (.rev | test("^[0-9a-f]{40}$"))
+    then [.name, .url, .rev] | @tsv
+    else error("unsupported entry in Aeneas package manifest") end' \
+    aeneas/backends/lean/lake-manifest.json)"
+  mkdir "$packages"
+  while IFS=$'\t' read -r name url rev; do
+    fetch_package "$packages/$name" "$url" "$rev" &
+    fetches+=("$!")
+  done <<<"$manifest_rows"
+fi
+
+download "$release/lean-build-aeneas-x86_64-unknown-linux-gnu.tar.gz" 84896c4bc46d93c87e0e4cfb09b602d0e94b60b7fb9373871d70244b9a49d525
+download https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz 42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
 mkdir -p aeneas/backends/lean/.lake/build
 tar -xzf lean-build-aeneas-x86_64-unknown-linux-gnu.tar.gz -C aeneas/backends/lean/.lake/build
 tar -xzf elan-x86_64-unknown-linux-gnu.tar.gz
@@ -44,6 +69,7 @@ lean_rc=0
   "$ELAN_HOME/bin/elan" toolchain install "$lean_toolchain" || lean_rc=$?
 wait "$rust_install"
 [ "$lean_rc" -eq 0 ] || exit "$lean_rc"
+for fetch_pid in "${fetches[@]}"; do wait "$fetch_pid"; done
 # PATH は regen.sh が env.sh を読む時点で展開する。
 # shellcheck disable=SC2016
 printf 'export ELAN_HOME=%q\nexport RUSTUP_TOOLCHAIN=%q\nexport PATH=%q:$PATH\n' \
