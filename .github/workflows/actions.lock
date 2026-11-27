@@ -5,6 +5,8 @@ version: 'v0.0.3'
 workflows:
     '.github/workflows/bash-gates.yml':
         - 'actions/checkout@v7.0.1'
+    '.github/workflows/ci-gate.yml':
+        - 'actions/checkout@v7.0.1'
     '.github/workflows/herdr-timeline.yml':
         - 'actions/checkout@v7.0.1'
     '.github/workflows/inbox-core.yml':

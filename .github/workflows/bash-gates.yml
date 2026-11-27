@@ -1,4 +1,6 @@
-# bash-gates/ の build と回帰テスト。tool ごとに workflow を分け、path filter で他の tool の変更では走らせない。
+# bash-gates/ の build と回帰テスト。tool ごとに workflow を分け、push では path filter で他の tool の変更では走らせない。
+# PR の入口は ci-gate.yml に一本化した。PR では ci-gate が変更 path を見て、bash-gates に当たるときだけこの workflow を workflow_call で呼ぶ。
+# (PR で二重実行しないよう、pull_request の trigger は持たない)
 # workspace の root の Cargo.toml (release profile) と Cargo.lock は全 tool に効くので、変更されたら走らせる。
 # toolchain の version (Rust 1.98 / Lean v4.35.0 / elan v4.2.4) は手元の検証と同じ値に固定する。elan は release asset の sha256 でも固定する。
 # action は .github/workflows/actions.lock に固定する (gh actions-lock で更新)。uses を tag 表記で書くのは、lockfile が commit と repo の identity を固定するため。
@@ -12,13 +14,7 @@ on:
       - 'Cargo.lock'
       - '.github/workflows/bash-gates.yml'
       - '.github/workflows/actions.lock'
-  pull_request:
-    paths:
-      - 'bash-gates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/bash-gates.yml'
-      - '.github/workflows/actions.lock'
+  workflow_call:
 
 permissions:
   contents: read

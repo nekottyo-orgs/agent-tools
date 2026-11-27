@@ -1,0 +1,123 @@
+# PR の CI の入口はこの workflow に一本化する。tool ごとの suite は path filter 付きで、対象外の PR では check 自体が作られない。
+# branch protection で tool ごとの check を必須にすると、対象外の PR がマージできなくなる。
+# そこで、全 PR で必ず作られる gate だけを必須にする。gate は対象外 tool の suite が skip されたときに成功として扱う。
+# 各 suite は workflow_call を持つ reusable workflow にし、PR ではこの workflow からだけ呼ぶ (push の trigger と jobs は各 workflow に残す)。
+# paths の集合は各 component workflow の従来の pull_request path filter と同じにする。
+name: ci-gate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # PR の変更がどの tool に当たるかを、tool ごとの真偽値にする。判定は shell だけで行い、追加の action は使わない
+  paths:
+    runs-on: ubuntu-latest
+    outputs:
+      bash_gates: ${{ steps.changed.outputs.bash_gates }}
+      herdr_timeline: ${{ steps.changed.outputs.herdr_timeline }}
+      inbox_core: ${{ steps.changed.outputs.inbox_core }}
+      secret_scan: ${{ steps.changed.outputs.secret_scan }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect changed tools
+        id: changed
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # merge commit と base の merge-base から PR の変更だけを見る。base 側の更新を tool の変更として拾わない
+          git fetch --no-tags origin "refs/heads/$BASE_REF"
+          base="$(git rev-parse FETCH_HEAD)"
+          # rename は削除と追加に分け、tool の外へ移動した file も移動元の tool の変更として拾う
+          changed="$(git diff --name-only --no-renames "$base...HEAD")"
+
+          bash_gates=false
+          herdr_timeline=false
+          inbox_core=false
+          secret_scan=false
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            case "$file" in
+              bash-gates/*|Cargo.toml|Cargo.lock|.github/workflows/bash-gates.yml|.github/workflows/actions.lock)
+                bash_gates=true
+                ;;
+            esac
+            case "$file" in
+              herdr-timeline/*|Cargo.toml|Cargo.lock|.github/workflows/herdr-timeline.yml|.github/workflows/actions.lock)
+                herdr_timeline=true
+                ;;
+            esac
+            case "$file" in
+              inbox-core/*|Cargo.toml|Cargo.lock|.github/workflows/inbox-core.yml|.github/workflows/actions.lock)
+                inbox_core=true
+                ;;
+            esac
+            case "$file" in
+              secret-scan/*|Cargo.toml|Cargo.lock|.github/workflows/secret-scan.yml|.github/workflows/actions.lock)
+                secret_scan=true
+                ;;
+            esac
+          done <<<"$changed"
+
+          {
+            echo "bash_gates=$bash_gates"
+            echo "herdr_timeline=$herdr_timeline"
+            echo "inbox_core=$inbox_core"
+            echo "secret_scan=$secret_scan"
+          } >> "$GITHUB_OUTPUT"
+
+  bash-gates:
+    needs: paths
+    if: needs.paths.outputs.bash_gates == 'true'
+    uses: ./.github/workflows/bash-gates.yml
+
+  herdr-timeline:
+    needs: paths
+    if: needs.paths.outputs.herdr_timeline == 'true'
+    uses: ./.github/workflows/herdr-timeline.yml
+
+  inbox-core:
+    needs: paths
+    if: needs.paths.outputs.inbox_core == 'true'
+    uses: ./.github/workflows/inbox-core.yml
+
+  secret-scan:
+    needs: paths
+    if: needs.paths.outputs.secret_scan == 'true'
+    uses: ./.github/workflows/secret-scan.yml
+
+  # branch protection で必須にする唯一の check。対象外 tool の skip は成功、failure / cancelled は失敗として扱う
+  gate:
+    needs: [paths, bash-gates, herdr-timeline, inbox-core, secret-scan]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required checks
+        env:
+          PATHS: ${{ needs.paths.result }}
+          BASH_GATES: ${{ needs['bash-gates'].result }}
+          HERDR_TIMELINE: ${{ needs['herdr-timeline'].result }}
+          INBOX_CORE: ${{ needs['inbox-core'].result }}
+          SECRET_SCAN: ${{ needs['secret-scan'].result }}
+        run: |
+          failed=0
+          check() {
+            case "$2" in
+              failure|cancelled)
+                echo "$1 は $2 で終わった" >&2
+                failed=1
+                ;;
+            esac
+          }
+          check paths "$PATHS"
+          check bash-gates "$BASH_GATES"
+          check herdr-timeline "$HERDR_TIMELINE"
+          check inbox-core "$INBOX_CORE"
+          check secret-scan "$SECRET_SCAN"
+          exit "$failed"

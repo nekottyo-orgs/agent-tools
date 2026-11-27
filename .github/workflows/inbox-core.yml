@@ -1,4 +1,6 @@
-# inbox-core/ の lint・回帰テストと、現在の lib.rs の Lean への翻訳・証明。tool ごとに workflow を分け、path filter で他の tool の変更では走らせない。
+# inbox-core/ の lint・回帰テストと、現在の lib.rs の Lean への翻訳・証明。tool ごとに workflow を分け、push では path filter で他の tool の変更では走らせない。
+# PR の入口は ci-gate.yml に一本化した。PR では ci-gate が変更 path を見て、inbox-core に当たるときだけこの workflow を workflow_call で呼ぶ。
+# (PR で二重実行しないよう、pull_request の trigger は持たない)
 # workspace の root の Cargo.toml (release profile) と Cargo.lock は全 tool に効くので、変更されたら走らせる。
 # toolchain の version (Rust 1.98) は bash-gates.yml と同じ値に固定する。
 # action は .github/workflows/actions.lock に固定する (gh actions-lock で更新)。
@@ -13,13 +15,7 @@ on:
       - 'Cargo.lock'
       - '.github/workflows/inbox-core.yml'
       - '.github/workflows/actions.lock'
-  pull_request:
-    paths:
-      - 'inbox-core/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/inbox-core.yml'
-      - '.github/workflows/actions.lock'
+  workflow_call:
 
 permissions:
   contents: read
