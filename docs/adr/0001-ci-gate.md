@@ -26,7 +26,7 @@ PR #93 で、全 PR に必ず作られる集約 check `gate` を追加した。t
   - `Correspondence` が `scriptGate ↔ expected` を主張し、`check` で scope 内の反例を探す
   - `=` の無い引数・空の job 名・空の result は、`check-results.sh` ではいずれも失敗になる。モデルはこれらを `UnknownName` / `UnknownResult` の `Entry` にまとめ、gate の成否が同じ失敗になることだけを扱う。形式ごとの扱いは実装テストが確かめる
   - scope は 8。必須 5 job に重複や未知の job を足した反例 (最大 7 引数) まで含む。Alloy の `check` は scope 内の反例探索であり、有限の全列挙ではない
-- 4^5 の実装テストは残し、モデルとの対応確認 (correspondence check) にする。真理表の全組み合わせは実装テスト、引数集合の欠落・重複・未知を含む仕様との同値はモデルが担う
+- 4^5 の実装テストは残し、モデルが表す真理表と実装の対応確認 (correspondence check) にする。真理表の全組み合わせは実装テスト、引数集合の欠落・重複・未知を含む仕様との同値はモデルが担う
   - `gate` は 5 job × 4 result の真理表。`success` / `skipped` / `failure` / `cancelled` の全組み合わせ (4^5) を列挙し、`success` と `skipped` だけなら終了コード 0、それ以外が 1 つでもあれば非 0 になることを確かめる
   - `gate` の入力集合として、各必須 job が欠けた場合、同じ job が重複した場合、未知の job 名 (既知 job 名の typo を含む) が混ざった場合も非 0 になることを確かめる
   - `paths` は代表ケースとして、各 tool 配下、`Cargo.toml` / `Cargo.lock` / `actions.lock`、各 component workflow、対象外のみ、複数 tool、非 ASCII・空白・改行を含む path を確かめる

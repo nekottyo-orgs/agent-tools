@@ -16,6 +16,7 @@
 //   - 空の引数列は Input.args.elems が空になる。check-results.sh の「引数が 0 個」と同じ。
 //   - 未知の job 名と result は、必須集合・既知集合への所属だけを見るため、種類ごとに 1 atom で足りる。
 //   - 引数の順序は成否に影響しない。seq を使うのは重複を区別するためだけ。
+//   - 実装との対応確認 (correspondence check) は ci-gate.test.sh の 4^5 の真理表。
 //
 // 検証: repo root から (Alloy 6.2.0 で確認)
 //   java -jar <alloy.jar> exec -f -c Correspondence -t text -o /tmp/ci-gate-alloy \
