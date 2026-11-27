@@ -26,51 +26,25 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # paths の選択と gate の集約の回帰テスト。component workflow の jobs を増やさないよう、paths job で毎回確かめる
+      - name: Test ci-gate scripts
+        run: bash .github/scripts/ci-gate/tests/ci-gate.test.sh
+
       - name: Detect changed tools
         id: changed
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
+          set -euo pipefail
           # merge commit と base の merge-base から PR の変更だけを見る。base 側の更新を tool の変更として拾わない
           git fetch --no-tags origin "refs/heads/$BASE_REF"
           base="$(git rev-parse FETCH_HEAD)"
           # rename は削除と追加に分け、tool の外へ移動した file も移動元の tool の変更として拾う
-          changed="$(git diff --name-only --no-renames "$base...HEAD")"
-
-          bash_gates=false
-          herdr_timeline=false
-          inbox_core=false
-          secret_scan=false
-          while IFS= read -r file; do
-            [ -n "$file" ] || continue
-            case "$file" in
-              bash-gates/*|Cargo.toml|Cargo.lock|.github/workflows/bash-gates.yml|.github/workflows/actions.lock)
-                bash_gates=true
-                ;;
-            esac
-            case "$file" in
-              herdr-timeline/*|Cargo.toml|Cargo.lock|.github/workflows/herdr-timeline.yml|.github/workflows/actions.lock)
-                herdr_timeline=true
-                ;;
-            esac
-            case "$file" in
-              inbox-core/*|Cargo.toml|Cargo.lock|.github/workflows/inbox-core.yml|.github/workflows/actions.lock)
-                inbox_core=true
-                ;;
-            esac
-            case "$file" in
-              secret-scan/*|Cargo.toml|Cargo.lock|.github/workflows/secret-scan.yml|.github/workflows/actions.lock)
-                secret_scan=true
-                ;;
-            esac
-          done <<<"$changed"
-
-          {
-            echo "bash_gates=$bash_gates"
-            echo "herdr_timeline=$herdr_timeline"
-            echo "inbox_core=$inbox_core"
-            echo "secret_scan=$secret_scan"
-          } >> "$GITHUB_OUTPUT"
+          # -z (NUL 区切り) で読む。既定の引用出力 (core.quotepath) では非 ASCII の path が
+          # "...\346..." のように quote され、tool の判定に一致しなくなる (fail-open)。
+          # -c core.quotepath=false も付け、path をそのまま扱うことを明示する
+          git -c core.quotepath=false diff --name-only --no-renames -z "$base...HEAD" \
+            | bash .github/scripts/ci-gate/detect-tools.sh >> "$GITHUB_OUTPUT"
 
   bash-gates:
     needs: paths
@@ -92,12 +66,16 @@ jobs:
     if: needs.paths.outputs.secret_scan == 'true'
     uses: ./.github/workflows/secret-scan.yml
 
-  # branch protection で必須にする唯一の check。対象外 tool の skip は成功、failure / cancelled は失敗として扱う
+  # branch protection で必須にする唯一の check。success と skipped は成功、それ以外 (failure / cancelled / 未知) は失敗として扱う
   gate:
     needs: [paths, bash-gates, herdr-timeline, inbox-core, secret-scan]
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Check required checks
         env:
           PATHS: ${{ needs.paths.result }}
@@ -106,18 +84,9 @@ jobs:
           INBOX_CORE: ${{ needs['inbox-core'].result }}
           SECRET_SCAN: ${{ needs['secret-scan'].result }}
         run: |
-          failed=0
-          check() {
-            case "$2" in
-              failure|cancelled)
-                echo "$1 は $2 で終わった" >&2
-                failed=1
-                ;;
-            esac
-          }
-          check paths "$PATHS"
-          check bash-gates "$BASH_GATES"
-          check herdr-timeline "$HERDR_TIMELINE"
-          check inbox-core "$INBOX_CORE"
-          check secret-scan "$SECRET_SCAN"
-          exit "$failed"
+          bash .github/scripts/ci-gate/check-results.sh \
+            "paths=$PATHS" \
+            "bash-gates=$BASH_GATES" \
+            "herdr-timeline=$HERDR_TIMELINE" \
+            "inbox-core=$INBOX_CORE" \
+            "secret-scan=$SECRET_SCAN"
