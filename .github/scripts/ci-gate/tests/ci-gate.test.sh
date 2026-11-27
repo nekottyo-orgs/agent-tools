@@ -118,7 +118,29 @@ expect_gate 1 "gate. 形式が不正なら失敗" paths
 expect_gate 1 "gate. 名前が空なら失敗" =success
 expect_gate 1 "gate. 結果が空なら失敗" paths=
 
-# 10. 4 種類の result を 5 job に並べた全組み合わせ (4^5) が真理表と一致する
+# 10. 必須 job が欠けると、残りがすべて success でも失敗する
+for job in paths bash-gates herdr-timeline inbox-core secret-scan; do
+  args=()
+  for pair in "${all_success[@]}"; do
+    case "$pair" in
+      "$job"=*) ;;
+      *) args+=("$pair") ;;
+    esac
+  done
+  expect_gate 1 "gate. $job が欠けると失敗" "${args[@]}"
+done
+
+# 11. 同じ job が重複していると失敗する (必須 job はすべて揃っていても)
+for job in paths bash-gates herdr-timeline inbox-core secret-scan; do
+  expect_gate 1 "gate. $job が重複すると失敗" "${all_success[@]}" "$job=success"
+done
+
+# 12. 未知の job 名は失敗する。既知 job の typo で置き換わっても失敗する
+expect_gate 1 "gate. 未知の job が増えると失敗" "${all_success[@]}" unknown=success
+expect_gate 1 "gate. 既知 job 名の typo は失敗" \
+  paths=success bash_gate=success herdr-timeline=success inbox-core=success secret-scan=success
+
+# 13. 4 種類の result を 5 job に並べた全組み合わせ (4^5) が真理表と一致する
 #     success / skipped だけなら 0、それ以外が 1 つでもあれば 1
 values=(success skipped failure cancelled)
 mismatches=0
@@ -149,7 +171,7 @@ for p in "${values[@]}"; do
 done
 assert_eq 0 "$mismatches" "gate. 4^5 の全組み合わせが真理表と一致"
 
-# 11. 失敗した job の名前と result が理由文に出る
+# 14. 失敗した job の名前と result が理由文に出る
 out="$(bash "$CHECK" paths=success bash-gates=failure herdr-timeline=skipped \
   inbox-core=cancelled secret-scan=success 2>&1)"
 assert_contains "$out" "bash-gates は failure" "gate. failure の job 名が理由文に出る"

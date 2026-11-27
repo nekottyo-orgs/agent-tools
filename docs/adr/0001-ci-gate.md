@@ -15,10 +15,11 @@ PR #93 で、全 PR に必ず作られる集約 check `gate` を追加した。t
 ## 決定
 
 - 変更 path の選択を `.github/scripts/ci-gate/detect-tools.sh` に切り出す。入力は `git -c core.quotepath=false diff --name-only --no-renames -z` の NUL 区切り出力とし、path を引用や行分割を経ずにそのまま `case` に掛ける。出力は `GITHUB_OUTPUT` に追記できる `KEY=value` 行
-- `gate` の集約を `.github/scripts/ci-gate/check-results.sh` に切り出す。引数は `job名=result` とし、`success` と `skipped` だけを成功、それ以外 (`failure` / `cancelled` / 未知の result) を失敗として扱う。結果の渡し忘れ・形式不正も、設定の取りこぼしを成功にしないため失敗にする
+- `gate` の集約を `.github/scripts/ci-gate/check-results.sh` に切り出す。引数は `job名=result` とし、`success` と `skipped` だけを成功、それ以外 (`failure` / `cancelled` / 未知の result) を失敗として扱う。結果の渡し忘れ・形式不正も、設定の取りこぼしを成功にしないため失敗にする。さらに必須 job の集合 (`paths` / `bash-gates` / `herdr-timeline` / `inbox-core` / `secret-scan`) を script 内に固定し、引数の job 名がその集合とちょうど一致することを要求する。欠落・重複・未知の job 名はいずれも失敗にする (呼び出し側の取りこぼしや typo による fail-open を防ぐ)
 - 回帰テストを `.github/scripts/ci-gate/tests/ci-gate.test.sh` に置き、`paths` job で毎回実行する。component workflow の jobs は増やさない
 - [AGENTS.md](../../AGENTS.md) の形式検証に対しては、状態遷移や並行実行を持たない有限な判定なので、Lean / Alloy のモデルではなく実装テストで対応する
   - `gate` は 5 job × 4 result の真理表。`success` / `skipped` / `failure` / `cancelled` の全組み合わせ (4^5) を列挙し、`success` と `skipped` だけなら終了コード 0、それ以外が 1 つでもあれば非 0 になることを確かめる
+  - `gate` の入力集合として、各必須 job が欠けた場合、同じ job が重複した場合、未知の job 名 (既知 job 名の typo を含む) が混ざった場合も非 0 になることを確かめる
   - `paths` は代表ケースとして、各 tool 配下、`Cargo.toml` / `Cargo.lock` / `actions.lock`、各 component workflow、対象外のみ、複数 tool、非 ASCII・空白・改行を含む path を確かめる
 - component workflow の `jobs` と `on.push` は変更しない
 
