@@ -177,5 +177,11 @@ out="$(bash "$CHECK" paths=success bash-gates=failure herdr-timeline=skipped \
 assert_contains "$out" "bash-gates は failure" "gate. failure の job 名が理由文に出る"
 assert_contains "$out" "inbox-core は cancelled" "gate. cancelled の job 名が理由文に出る"
 
+# 15. 6 position の例 (モデルの SixPositionsRejected / showSixPositions と対応)。
+#     Alloy の elems は位置の重複を畳むため、位置ごとに数えることを実装でも固定する。
+#     必須 5 job に、重複した paths か余分な未知の job を足した 6 引数は失敗する
+expect_gate 1 "gate. 6 position (paths の重複) は失敗" "${all_success[@]}" paths=success
+expect_gate 1 "gate. 6 position (未知の job が余分) は失敗" "${all_success[@]}" unknown=success
+
 printf '結果: pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

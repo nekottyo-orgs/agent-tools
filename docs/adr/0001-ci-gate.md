@@ -21,12 +21,13 @@ PR #93 で、全 PR に必ず作られる集約 check `gate` を追加した。t
 - モデルの前提・範囲と `check-results.sh` との対応は次のとおり
   - 前提: 必須 job は `check-results.sh` の `required_jobs` と同じ 5 つ。result は `success` / `skipped` / `failure` / `cancelled`。引数は `job名=result` の列で、順序は成否に影響しない
   - `Name` は必須 5 job と、それ以外の job 名 (`UnknownName`) を表す。`Result` は 4 種類と、それ以外の result (`UnknownResult`) を表す。`Entry` が 1 引数、`Input.args` が引数の列 (重複を区別するため `seq`)
-  - `scriptGate` は `check-results.sh` の判定を写す。引数が 1 つ以上あり、未知の job 名が無く、`success` / `skipped` 以外の result が無く、job 名の重複が無く、必須 job がすべて現れるときだけ成功する
-  - `expected` は仕様。必須 job の集合と引数の job 名の集合が一致し、引数の個数が必須 job の数 (5) に等しく、`success` / `skipped` 以外の result が無い、という形で「ちょうど揃い、すべて success か skipped」を表す
+  - `scriptGate` は `check-results.sh` の判定を写す。引数が 1 つ以上あり、未知の job 名が無く、`success` / `skipped` 以外の result が無く、引数の各位置の job 名が互いに異なり (引数の集合 `Input.args.elems` ではなく、位置ごとに数える)、必須 job がすべて現れるときだけ成功する
+  - `expected` は仕様。必須 job の集合と引数の job 名の集合が一致し、引数の個数 (`#Input.args`。重複した位置も数える) が必須 job の数 (5) に等しく、`success` / `skipped` 以外の result が無い、という形で「ちょうど揃い、すべて success か skipped」を表す。`#Input.args.elems` で数えると、同じ job 名の位置が集合で畳まれて 6 引数の重複を見逃す
   - `Correspondence` が `scriptGate ↔ expected` を主張し、`check` で scope 内の反例を探す
+  - `SixPositionsRejected` が、必須 5 job がすべて `success` / `skipped` でも 6 position の入力 (6 個目が必須 job の重複か未知の job) は `scriptGate` も `expected` も偽になることを主張する。`showSixPositions` でその入力が存在することも確かめる。`elems` だけで重複を判定していた旧モデルではこの `check` が `SAT` (反例あり) になる
   - `=` の無い引数・空の job 名・空の result は、`check-results.sh` ではいずれも失敗になる。モデルはこれらを `UnknownName` / `UnknownResult` の `Entry` にまとめ、gate の成否が同じ失敗になることだけを扱う。形式ごとの扱いは実装テストが確かめる
   - scope は 8。必須 5 job に重複や未知の job を足した反例 (最大 7 引数) まで含む。Alloy の `check` は scope 内の反例探索であり、有限の全列挙ではない
-- 4^5 の実装テストは残し、モデルが表す真理表と実装の対応確認 (correspondence check) にする。真理表の全組み合わせは実装テスト、引数集合の欠落・重複・未知を含む仕様との同値はモデルが担う
+- 4^5 の実装テストは残し、モデルが表す真理表と実装の対応確認 (correspondence check) にする。真理表の全組み合わせは実装テスト、引数集合の欠落・重複・未知を含む仕様との同値はモデルが担う。6 position の例はモデルの `SixPositionsRejected` と実装テストの両方で確かめる
   - `gate` は 5 job × 4 result の真理表。`success` / `skipped` / `failure` / `cancelled` の全組み合わせ (4^5) を列挙し、`success` と `skipped` だけなら終了コード 0、それ以外が 1 つでもあれば非 0 になることを確かめる
   - `gate` の入力集合として、各必須 job が欠けた場合、同じ job が重複した場合、未知の job 名 (既知 job 名の typo を含む) が混ざった場合も非 0 になることを確かめる
   - `paths` は代表ケースとして、各 tool 配下、`Cargo.toml` / `Cargo.lock` / `actions.lock`、各 component workflow、対象外のみ、複数 tool、非 ASCII・空白・改行を含む path を確かめる
@@ -38,8 +39,9 @@ PR #93 で、全 PR に必ず作られる集約 check `gate` を追加した。t
 - `actionlint -no-color .github/workflows/*.yml`
 - `gh actions-lock --verify-local` (action の追加は無いが、lockfile の coverage を確認する)
 - モデル: `java -jar <alloy.jar> exec -f -c Correspondence -t text -o /tmp/ci-gate-alloy .github/scripts/ci-gate/ci-gate.als`
-  - Alloy 6.2.0 で実行し、`check Correspondence` が `UNSAT` (scope 8 に反例が無い) になることを確認した。`run showPass` が `SAT` (成功する入力が存在する) になることも確認した
-  - 検出力の確認として、モデルの `scriptGate` が `failure` を成功として扱うように変えると `SAT` (反例あり) になり、必須 job の検査または重複の検査を外すと `SAT` になることを手元で確かめた
+  - `SixPositionsRejected` は同じ jar で `-c SixPositionsRejected` を指定して実行する
+  - Alloy 6.2.0 で実行し、`check Correspondence` と `check SixPositionsRejected` が `UNSAT` (scope 8 に反例が無い) になることを確認した。`run showPass` と `run showSixPositions` が `SAT` (成功する入力と 6 position の入力が存在する) になることも確認した
+  - 検出力の確認として、モデルの `scriptGate` が `failure` を成功として扱うように変えると `SAT` (反例あり) になり、必須 job の検査または重複の検査を外すと `SAT` になることを手元で確かめた。重複の判定を `Input.args.elems` に戻すと `check SixPositionsRejected` が `SAT` になり、6 position の例が旧モデルの見逃しを検出することも確かめた
   - CI では回さない。Alloy の jar と Java を CI に固定する仕組みはこの PR では作らず、モデルは手元の検証に留める
 - CI では `paths` job がテストを実行し、その後に実際の diff で `detect-tools.sh` を動かす。`paths` job 自体が失敗した場合も `gate` は `paths=failure` を見て失敗する
 
