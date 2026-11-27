@@ -2,7 +2,7 @@
 
 コーディングエージェント (Claude Code など) の運用で使う小さな tool を、tool ごとのディレクトリにまとめる repo。
 
-- tool ごとにディレクトリを分け、build と test の workflow は `.github/workflows/<tool>.yml` に置いて path filter で絞る
+- tool ごとにディレクトリを分け、build と test の workflow は `.github/workflows/<tool>.yml` に置く。CI の入口は `.github/workflows/ci-gate.yml` に集約し、PR は変更 path に応じて対象 tool の suite だけ、main への push は全 tool の suite を実行する
 - Release の workflow は `.github/workflows/release.yml` の 1 本で、tag の prefix (`<tool>/v*`) からどの tool を build するかを決める。tool を足すときは、この workflow の tag の glob と plan job の tools を足す
 - release は tagpr で tool ごとに行い、tag は `<tool>/v<version>` 形式 (例: `bash-gates/v0.1.0`)
 - herdr-timeline も release の対象で、`herdr-timeline/v<version>` の tag で binary が載る。`cargo install --path herdr-timeline` でも入れられる

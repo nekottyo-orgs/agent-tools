@@ -81,6 +81,13 @@ expect_tools "paths. 改行を含む path" false false false true $'secret-scan/
 expect_tools "paths. 複数 tool の変更" true false true false 'bash-gates/a.rs' 'inbox-core/b.rs'
 expect_tools "paths. 変更なし" false false false false
 
+# 7. main への push は path 判定をせず、全 tool を対象にする (--all)
+all_tools="$(expected_tools true true true true)"
+assert_eq "$all_tools" "$(bash "$DETECT" --all)" "push. 全 tool が true"
+assert_eq "$all_tools" "$(printf 'README.md\0' | bash "$DETECT" --all)" "push. 対象外の path でも全 tool が true"
+bash "$DETECT" --unknown >/dev/null 2>&1
+assert_eq 2 "$?" "push. 未知の引数は失敗"
+
 # gate: `job名=result` を渡し、終了コードを比べる
 expect_gate() { # $1=期待する終了コード $2=説明 $3...=job名=result
   local want=$1 desc=$2
@@ -90,14 +97,14 @@ expect_gate() { # $1=期待する終了コード $2=説明 $3...=job名=result
 }
 all_success=(paths=success bash-gates=success herdr-timeline=success inbox-core=success secret-scan=success)
 
-# 7. success と skipped だけなら成功
+# 8. success と skipped だけなら成功
 expect_gate 0 "gate. 全部 success" "${all_success[@]}"
 expect_gate 0 "gate. 全部 skipped" \
   paths=skipped bash-gates=skipped herdr-timeline=skipped inbox-core=skipped secret-scan=skipped
 expect_gate 0 "gate. success と skipped の混在" \
   paths=success bash-gates=skipped herdr-timeline=success inbox-core=skipped secret-scan=success
 
-# 8. failure / cancelled は 1 つでもあれば失敗し、どの job でも同じ
+# 9. failure / cancelled は 1 つでもあれば失敗し、どの job でも同じ
 for job in paths bash-gates herdr-timeline inbox-core secret-scan; do
   for result in failure cancelled; do
     args=("${all_success[@]}")
@@ -110,7 +117,7 @@ for job in paths bash-gates herdr-timeline inbox-core secret-scan; do
   done
 done
 
-# 9. skipped 以外の未知の result と、結果の渡し忘れ・形式不正も失敗 (fail-open にしない)
+# 10. skipped 以外の未知の result と、結果の渡し忘れ・形式不正も失敗 (fail-open にしない)
 expect_gate 1 "gate. 未知の result は失敗" \
   paths=neutral bash-gates=success herdr-timeline=success inbox-core=success secret-scan=success
 expect_gate 1 "gate. 結果が無ければ失敗"
@@ -118,7 +125,7 @@ expect_gate 1 "gate. 形式が不正なら失敗" paths
 expect_gate 1 "gate. 名前が空なら失敗" =success
 expect_gate 1 "gate. 結果が空なら失敗" paths=
 
-# 10. 必須 job が欠けると、残りがすべて success でも失敗する
+# 11. 必須 job が欠けると、残りがすべて success でも失敗する
 for job in paths bash-gates herdr-timeline inbox-core secret-scan; do
   args=()
   for pair in "${all_success[@]}"; do
@@ -130,17 +137,17 @@ for job in paths bash-gates herdr-timeline inbox-core secret-scan; do
   expect_gate 1 "gate. $job が欠けると失敗" "${args[@]}"
 done
 
-# 11. 同じ job が重複していると失敗する (必須 job はすべて揃っていても)
+# 12. 同じ job が重複していると失敗する (必須 job はすべて揃っていても)
 for job in paths bash-gates herdr-timeline inbox-core secret-scan; do
   expect_gate 1 "gate. $job が重複すると失敗" "${all_success[@]}" "$job=success"
 done
 
-# 12. 未知の job 名は失敗する。既知 job の typo で置き換わっても失敗する
+# 13. 未知の job 名は失敗する。既知 job の typo で置き換わっても失敗する
 expect_gate 1 "gate. 未知の job が増えると失敗" "${all_success[@]}" unknown=success
 expect_gate 1 "gate. 既知 job 名の typo は失敗" \
   paths=success bash_gate=success herdr-timeline=success inbox-core=success secret-scan=success
 
-# 13. 4 種類の result を 5 job に並べた全組み合わせ (4^5) が真理表と一致する
+# 14. 4 種類の result を 5 job に並べた全組み合わせ (4^5) が真理表と一致する
 #     success / skipped だけなら 0、それ以外が 1 つでもあれば 1
 values=(success skipped failure cancelled)
 mismatches=0
@@ -171,13 +178,13 @@ for p in "${values[@]}"; do
 done
 assert_eq 0 "$mismatches" "gate. 4^5 の全組み合わせが真理表と一致"
 
-# 14. 失敗した job の名前と result が理由文に出る
+# 15. 失敗した job の名前と result が理由文に出る
 out="$(bash "$CHECK" paths=success bash-gates=failure herdr-timeline=skipped \
   inbox-core=cancelled secret-scan=success 2>&1)"
 assert_contains "$out" "bash-gates は failure" "gate. failure の job 名が理由文に出る"
 assert_contains "$out" "inbox-core は cancelled" "gate. cancelled の job 名が理由文に出る"
 
-# 15. 6 position の例 (モデルの SixPositionsRejected / showSixPositions と対応)。
+# 16. 6 position の例 (モデルの SixPositionsRejected / showSixPositions と対応)。
 #     Alloy の elems は位置の重複を畳むため、位置ごとに数えることを実装でも固定する。
 #     必須 5 job に、重複した paths か余分な未知の job を足した 6 引数は失敗する
 expect_gate 1 "gate. 6 position (paths の重複) は失敗" "${all_success[@]}" paths=success

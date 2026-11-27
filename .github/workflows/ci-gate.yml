@@ -1,18 +1,22 @@
-# PR の CI の入口はこの workflow に一本化する。tool ごとの suite は path filter 付きで、対象外の PR では check 自体が作られない。
-# branch protection で tool ごとの check を必須にすると、対象外の PR がマージできなくなる。
-# そこで、全 PR で必ず作られる gate だけを必須にする。gate は対象外 tool の suite が skip されたときに成功として扱う。
-# 各 suite は workflow_call を持つ reusable workflow にし、PR ではこの workflow からだけ呼ぶ (push の trigger と jobs は各 workflow に残す)。
-# paths の集合は各 component workflow の従来の pull_request path filter と同じにする。
+# CI の入口はこの workflow に一本化する。
+# PR は変更のあった tool の suite だけを実行する (scoped)。対象外の tool では check 自体が作られないため、
+# branch protection では tool ごとの check ではなく、全 PR で必ず作られる gate だけを必須にする。
+# main への push は path で絞らず全 tool の suite を実行する (full)。main の commit 単位で全 suite が通ったことを保証するため。
+# 各 suite は workflow_call を持つ reusable workflow にし、この workflow からだけ呼ぶ (component workflow は pull_request / push の trigger を持たない)。
+# path の集合は、component workflow が持っていた pull_request path filter と同じにする。
 name: ci-gate
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  # PR の変更がどの tool に当たるかを、tool ごとの真偽値にする。判定は shell だけで行い、追加の action は使わない
+  # PR の変更がどの tool に当たるか、main への push なら全 tool を対象にするかを、tool ごとの真偽値にする。
+  # 判定は shell だけで行い、追加の action は使わない
   paths:
     runs-on: ubuntu-latest
     outputs:
@@ -33,18 +37,24 @@ jobs:
       - name: Detect changed tools
         id: changed
         env:
+          EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          # merge commit と base の merge-base から PR の変更だけを見る。base 側の更新を tool の変更として拾わない
-          git fetch --no-tags origin "refs/heads/$BASE_REF"
-          base="$(git rev-parse FETCH_HEAD)"
-          # rename は削除と追加に分け、tool の外へ移動した file も移動元の tool の変更として拾う
-          # -z (NUL 区切り) で読む。既定の引用出力 (core.quotepath) では非 ASCII の path が
-          # "...\346..." のように quote され、tool の判定に一致しなくなる (fail-open)。
-          # -c core.quotepath=false も付け、path をそのまま扱うことを明示する
-          git -c core.quotepath=false diff --name-only --no-renames -z "$base...HEAD" \
-            | bash .github/scripts/ci-gate/detect-tools.sh >> "$GITHUB_OUTPUT"
+          # main への push は path 判定をせず、全 tool を対象にする。分岐は detect-tools.sh に持たせる
+          if [ "$EVENT_NAME" = push ]; then
+            bash .github/scripts/ci-gate/detect-tools.sh --all >> "$GITHUB_OUTPUT"
+          else
+            # merge commit と base の merge-base から PR の変更だけを見る。base 側の更新を tool の変更として拾わない
+            git fetch --no-tags origin "refs/heads/$BASE_REF"
+            base="$(git rev-parse FETCH_HEAD)"
+            # rename は削除と追加に分け、tool の外へ移動した file も移動元の tool の変更として拾う
+            # -z (NUL 区切り) で読む。既定の引用出力 (core.quotepath) では非 ASCII の path が
+            # "...\346..." のように quote され、tool の判定に一致しなくなる (fail-open)。
+            # -c core.quotepath=false も付け、path をそのまま扱うことを明示する
+            git -c core.quotepath=false diff --name-only --no-renames -z "$base...HEAD" \
+              | bash .github/scripts/ci-gate/detect-tools.sh >> "$GITHUB_OUTPUT"
+          fi
 
   bash-gates:
     needs: paths
@@ -66,7 +76,8 @@ jobs:
     if: needs.paths.outputs.secret_scan == 'true'
     uses: ./.github/workflows/secret-scan.yml
 
-  # branch protection で必須にする唯一の check。success と skipped は成功、それ以外 (failure / cancelled / 未知) は失敗として扱う
+  # branch protection で必須にする唯一の check (PR)。main では全 suite の結果を集約する。
+  # success と skipped は成功、それ以外 (failure / cancelled / 未知) は失敗として扱う
   gate:
     needs: [paths, bash-gates, herdr-timeline, inbox-core, secret-scan]
     if: always()
