@@ -7,7 +7,7 @@
 
 PR #93 で、全 PR に必ず作られる集約 check `gate` を追加した。tool ごとの reusable workflow は変更 path に応じて `ci-gate` から呼び、対象外の tool は skip する。branch protection では `gate` だけを必須にする。
 
-この形では PR で変更のあった tool の suite だけが実行され、残りは skip を成功扱いにする。そのため「main の commit 単位で全 suite が通っている」という保証が無い、という指摘があった。agents repo と同じく、PR は選択実行、main はフル実行にする。
+この形では PR で変更のあった tool の suite だけが実行され、残りは skip を成功扱いにする。そのため「main に push されるたびに、その時点の main (tip) で全 suite が通っている」という保証が無い、という指摘があった。agents repo と同じく、PR は選択実行、main はフル実行にする。
 
 レビューで次の 2 点が問題になった。
 
@@ -19,7 +19,7 @@ PR #93 で、全 PR に必ず作られる集約 check `gate` を追加した。t
 - 変更 path の選択を `.github/scripts/ci-gate/detect-tools.sh` に切り出す。入力は `git -c core.quotepath=false diff --name-only --no-renames -z` の NUL 区切り出力とし、path を引用や行分割を経ずにそのまま `case` に掛ける。出力は `GITHUB_OUTPUT` に追記できる `KEY=value` 行
 - `gate` の集約を `.github/scripts/ci-gate/check-results.sh` に切り出す。引数は `job名=result` とし、`success` と `skipped` だけを成功、それ以外 (`failure` / `cancelled` / 未知の result) を失敗として扱う。結果の渡し忘れ・形式不正も、設定の取りこぼしを成功にしないため失敗にする。さらに必須 job の集合 (`paths` / `bash-gates` / `herdr-timeline` / `inbox-core` / `secret-scan`) を script 内に固定し、引数の job 名がその集合とちょうど一致することを要求する。欠落・重複・未知の job 名はいずれも失敗にする (呼び出し側の取りこぼしや typo による fail-open を防ぐ)
 - 回帰テストを `.github/scripts/ci-gate/tests/ci-gate.test.sh` に置き、`paths` job で毎回実行する。component workflow の jobs は増やさない
-- `ci-gate` に `push: branches: [main]` を追加し、PR は変更のあった tool の suite だけを実行する scoped、main への push は全 tool の suite を実行する full にする。main では path 判定をせず全 tool を対象にするため、`detect-tools.sh --all` に push 用の経路を持たせる。YAML 側に全 tool の真偽値をベタ書きせず、path 判定と同じ script とテストで扱う
+- `ci-gate` に `push: branches: [main]` を追加し、PR は変更のあった tool の suite だけを実行する scoped、main への push は全 tool の suite を実行する full にする。push trigger は push イベント単位で起動し、検証するのはその push の tip commit である。複数 commit をまとめた push の途中 commit は個別には検証されず、保証は「main に push されるたびに、その時点の main (tip) に対して全 suite を実行する」に限る。この repo のマージは squash merge で 1 マージ = 1 commit = 1 push なので、main の各状態は検証済みになる。main では path 判定をせず全 tool を対象にするため、`detect-tools.sh --all` に push 用の経路を持たせる。YAML 側に全 tool の真偽値をベタ書きせず、path 判定と同じ script とテストで扱う
 - component workflow 4 本から `push` trigger を外す。`workflow_call` と `jobs` は変えない。main でも入口を `ci-gate` に一本化し、suite が二重に走らないようにする
 - [AGENTS.md](../../AGENTS.md) の形式検証として、`gate` の集約ルールの小さな Alloy モデルを `.github/scripts/ci-gate/ci-gate.als` に置く。有限で状態遷移も並行性も無い判定だが、実装テストとは別に「必須 job がちょうど揃い、すべて success か skipped のとき、かつそのときに限り成功する」という仕様を、実装から独立した形で書くため (理由は代替案 D)
 - モデルの前提・範囲と `check-results.sh` との対応は次のとおり
@@ -51,7 +51,7 @@ PR #93 で、全 PR に必ず作られる集約 check `gate` を追加した。t
   - 検出力の確認として、モデルの `scriptGate` が `failure` を成功として扱うように変えると `SAT` (反例あり) になり、必須 job の検査または重複の検査を外すと `SAT` になることを手元で確かめた。重複の判定を `Input.args.elems` に戻すと `check SixPositionsRejected` が `SAT` になり、6 position の例が旧モデルの見逃しを検出することも確かめた
   - CI では回さない。Alloy の jar と Java を CI に固定する仕組みはこの PR では作らず、モデルは手元の検証に留める
   - 今回の変更は `gate` の集約ルールを変えないため、Alloy モデル (`ci-gate.als`) は変更しない
-- CI では `paths` job がテストを実行し、その後に PR なら実際の diff、main への push なら `--all` で `detect-tools.sh` を動かす。`paths` job 自体が失敗した場合も `gate` は `paths=failure` を見て失敗する
+- CI では `paths` job がテストを実行し、その後に PR なら実際の diff、main への push なら `--all` で `detect-tools.sh` を動かす。push で各 suite が検証するのは、checkout したその push の tip commit である。`paths` job 自体が失敗した場合も `gate` は `paths=failure` を見て失敗する
 
 ## 検討した代替案と捨てた理由
 
@@ -71,7 +71,7 @@ PR #93 で、全 PR に必ず作られる集約 check `gate` を追加した。t
 - `paths` の選択と `gate` の集約を、YAML を読まずにローカルで検証できる
 - `gate` の不変条件が真理表の全組み合わせで検査される
 - 集約ルールの仕様が Alloy のモデルとして実装から独立に残り、欠落・重複・未知の job を含む入力で実装との同値を反例探索できる
-- PR は変更のあった tool に絞ったまま、main の commit 単位では全 suite が通ったことを `gate` で保証できる
+- PR は変更のあった tool に絞ったまま、main への push のたびにその時点の main (tip) で全 suite が通ったことを `gate` で保証できる
 - main への push でも component workflow の suite は `ci-gate` から 1 回だけ呼ばれ、二重に走らない
 
 ### 悪い面

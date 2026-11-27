@@ -44,7 +44,7 @@ case "${1-}" in
     done
     ;;
   --all)
-    # main の commit 単位で全 suite が通ったことを保証するため、path では絞らない
+    # main への push は、その時点の main (tip) に対して全 suite を実行するため、path では絞らない
     bash_gates=true
     herdr_timeline=true
     inbox_core=true

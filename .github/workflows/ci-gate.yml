@@ -1,7 +1,9 @@
 # CI の入口はこの workflow に一本化する。
 # PR は変更のあった tool の suite だけを実行する (scoped)。対象外の tool では check 自体が作られないため、
 # branch protection では tool ごとの check ではなく、全 PR で必ず作られる gate だけを必須にする。
-# main への push は path で絞らず全 tool の suite を実行する (full)。main の commit 単位で全 suite が通ったことを保証するため。
+# main への push は path で絞らず全 tool の suite を実行する (full)。push のたびにその時点の main (tip) に対して
+# 全 suite を検証するため。複数 commit をまとめた push の途中 commit は個別には検証されない。
+# この repo のマージは squash merge で 1 マージ = 1 commit = 1 push なので、main の各状態は検証済みになる。
 # 各 suite は workflow_call を持つ reusable workflow にし、この workflow からだけ呼ぶ (component workflow は pull_request / push の trigger を持たない)。
 # path の集合は、component workflow が持っていた pull_request path filter と同じにする。
 name: ci-gate
