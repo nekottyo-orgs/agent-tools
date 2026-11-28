@@ -22,6 +22,7 @@ PR #93 で、全 PR に必ず作られる集約 check `gate` を追加した。t
 - `ci-gate` に `push: branches: [main]` を追加し、PR は変更のあった tool の suite だけを実行する scoped、main への push は全 tool の suite を実行する full にする。push trigger は push イベント単位で起動し、検証するのはその push の tip commit である。複数 commit をまとめた push の途中 commit は個別には検証されず、保証は「main に push されるたびに、その時点の main (tip) に対して全 suite を実行する」に限る。この repo のマージは squash merge で 1 マージ = 1 commit = 1 push なので、main の各状態は検証済みになる。main では path 判定をせず全 tool を対象にするため、`detect-tools.sh --all` に push 用の経路を持たせる。YAML 側に全 tool の真偽値をベタ書きせず、path 判定と同じ script とテストで扱う
 - component workflow 4 本から `push` trigger を外す。`workflow_call` と `jobs` は変えない。main でも入口を `ci-gate` に一本化し、suite が二重に走らないようにする
 - [AGENTS.md](../../AGENTS.md) の形式検証として、`gate` の集約ルールの小さな Alloy モデルを `.github/scripts/ci-gate/ci-gate.als` に置く。有限で状態遷移も並行性も無い判定だが、実装テストとは別に「必須 job がちょうど揃い、すべて success か skipped のとき、かつそのときに限り成功する」という仕様を、実装から独立した形で書くため (理由は代替案 D)
+- モデル検査は `.github/scripts/ci-gate/check-model.sh` を `paths` job から実行し、CI でも回す。Alloy は 6.2.0 に固定し、公式 release の jar を固定 URL (`https://github.com/AlloyTools/org.alloytools.alloy/releases/download/v6.2.0/org.alloytools.alloy.dist.jar`) から取得して、repo に固定した sha256 (`6b8c1cb5bc93bedfc7c61435c4e1ab6e688a242dc702a394628d9a9801edb78d`) と一致することを確認してから使う。Java は Temurin 21 を version 固定の `actions/setup-java` で用意し、その action も `actions.lock` に記録する。`check Correspondence` と `check SixPositionsRejected` は `UNSAT`、`run showPass` と `run showSixPositions` は `SAT` を要求し、反例の有無・instance の有無が想定と違う場合、または出力から結果を判定できない場合は失敗にする (fail-close)。gate の必須 job 集合 (`paths` / `bash-gates` / `herdr-timeline` / `inbox-core` / `secret-scan`) とモデルの Required は変えない
 - モデルの前提・範囲と `check-results.sh` との対応は次のとおり
   - モデルの対象は `gate` の集約ルールだけ。PR と push の区別、および `paths` の選択 (`detect-tools.sh` の path 判定と `--all`) はモデル対象外とし、実装テストで扱う
   - 前提: 必須 job は `check-results.sh` の `required_jobs` と同じ 5 つ。result は `success` / `skipped` / `failure` / `cancelled`。引数は `job名=result` の列で、順序は成否に影響しない
@@ -44,14 +45,15 @@ PR #93 で、全 PR に必ず作られる集約 check `gate` を追加した。t
   - PR の `paths` 選択に加え、main の `--all` (全 tool が true、対象外の path でも変わらない、未知の引数は失敗) と、`gate` の真理表・異常系を含む全ケースが pass すること
 - `actionlint -no-color .github/workflows/*.yml`
   - `ci-gate.yml` の `push: branches: [main]` と、component workflow から `push` trigger を外した形を含めて検査する
-- `gh actions-lock --verify-local` (action の追加は無いが、lockfile の coverage を確認する)
-- モデル: `java -jar <alloy.jar> exec -f -c Correspondence -t text -o /tmp/ci-gate-alloy .github/scripts/ci-gate/ci-gate.als`
-  - `SixPositionsRejected` は同じ jar で `-c SixPositionsRejected` を指定して実行する
-  - Alloy 6.2.0 で実行し、`check Correspondence` と `check SixPositionsRejected` が `UNSAT` (scope 8 に反例が無い) になることを確認した。`run showPass` と `run showSixPositions` が `SAT` (成功する入力と 6 position の入力が存在する) になることも確認した
-  - 検出力の確認として、モデルの `scriptGate` が `failure` を成功として扱うように変えると `SAT` (反例あり) になり、必須 job の検査または重複の検査を外すと `SAT` になることを手元で確かめた。重複の判定を `Input.args.elems` に戻すと `check SixPositionsRejected` が `SAT` になり、6 position の例が旧モデルの見逃しを検出することも確かめた
-  - CI では回さない。Alloy の jar と Java を CI に固定する仕組みはこの PR では作らず、モデルは手元の検証に留める
-  - 今回の変更は `gate` の集約ルールを変えないため、Alloy モデル (`ci-gate.als`) は変更しない
-- CI では `paths` job がテストを実行し、その後に PR なら実際の diff、main への push なら `--all` で `detect-tools.sh` を動かす。push で各 suite が検証するのは、checkout したその push の tip commit である。`paths` job 自体が失敗した場合も `gate` は `paths=failure` を見て失敗する
+- `gh actions-lock --verify-local` (`actions/setup-java` を追加したため、lockfile の coverage を確認する)
+- モデル: `bash .github/scripts/ci-gate/check-model.sh`
+  - script は Alloy 6.2.0 の配布 jar を固定 URL (`https://github.com/AlloyTools/org.alloytools.alloy/releases/download/v6.2.0/org.alloytools.alloy.dist.jar`) から取得し、sha256 `6b8c1cb5bc93bedfc7c61435c4e1ab6e688a242dc702a394628d9a9801edb78d` を検証してから使う。取得や検証に失敗した場合は失敗する。手元では `ALLOY_CACHE_DIR` に同じ jar を置けば再利用する
+  - script が実行するコマンドは `java -jar <alloy.jar> exec -f -c <command> -t text -o <dir> .github/scripts/ci-gate/ci-gate.als` で、`Correspondence` / `SixPositionsRejected` / `showPass` / `showSixPositions` の 4 つを順に実行する
+  - `check Correspondence` と `check SixPositionsRejected` が `UNSAT` (scope 8 に反例が無い)、`run showPass` と `run showSixPositions` が `SAT` (成功する入力と 6 position の入力が存在する) になることを要求する。結果が想定と違う場合や、出力から対象コマンドの結果を 1 行に特定できない場合 (未知の形式を含む) は失敗する (fail-close)
+  - 検出力の確認として、モデルの `scriptGate` が `failure` を成功として扱うように変えると `check Correspondence` が `SAT` (反例あり) になり、script が失敗することを手元で確かめた。必須 job の検査または重複の検査を外すと `SAT` になる。重複の判定を `Input.args.elems` に戻すと `check SixPositionsRejected` が `SAT` になり、6 position の例が旧モデルの見逃しを検出することも確かめた
+  - CI では `paths` job が上の script を毎回実行する。Alloy の jar は script が取得時に sha256 を検証し、Java は workflow が Temurin 21 を固定して用意する。`paths` job が失敗すれば `gate` は `paths=failure` で失敗する
+  - 今回の変更は `gate` の集約ルールとモデルを変えないため、Alloy モデル (`ci-gate.als`) は変更しない
+- CI では `paths` job が script のテストとモデル検査を実行し、その後に PR なら実際の diff、main への push なら `--all` で `detect-tools.sh` を動かす。push で各 suite が検証するのは、checkout したその push の tip commit である。`paths` job 自体が失敗した場合も `gate` は `paths=failure` を見て失敗する
 
 ## 検討した代替案と捨てた理由
 
@@ -71,6 +73,7 @@ PR #93 で、全 PR に必ず作られる集約 check `gate` を追加した。t
 - `paths` の選択と `gate` の集約を、YAML を読まずにローカルで検証できる
 - `gate` の不変条件が真理表の全組み合わせで検査される
 - 集約ルールの仕様が Alloy のモデルとして実装から独立に残り、欠落・重複・未知の job を含む入力で実装との同値を反例探索できる
+- モデルを変えたときに CI が `check` と `run` の結果を検証するため、手元で回し忘れても反例の見逃しや instance の消失を検出できる
 - PR は変更のあった tool に絞ったまま、main への push のたびにその時点の main (tip) で全 suite が通ったことを `gate` で保証できる
 - main への push でも component workflow の suite は `ci-gate` から 1 回だけ呼ばれ、二重に走らない
 
@@ -79,4 +82,4 @@ PR #93 で、全 PR に必ず作られる集約 check `gate` を追加した。t
 - `gate` job でも checkout が要るため、集約の実行に repository の取得が 1 回増える
 - `paths` job が script のテストも兼ねるため、テストが落ちると suite の選択より先に job が失敗する (gate は失敗するので fail-close)
 - main への push は変更 path によらず全 suite を実行するため、PR の scoped 実行に比べて CI の実行時間と消費は増える (main の保証と引き換えの意図したコスト)
-- Alloy のモデルは CI で実行しないため、モデルを変えたときは手元で `check` を回す必要がある
+- Alloy の jar (約 21 MB) の取得と Java の用意を `paths` job に加えたため、PR ごとに数秒から数十秒の追加コストがかかる。jar は CI では実行ごとに取得し、手元では `ALLOY_CACHE_DIR` に同じハッシュの jar があれば再利用する
