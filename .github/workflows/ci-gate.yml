@@ -1,0 +1,115 @@
+# CI の入口はこの workflow に一本化する。
+# PR は変更のあった tool の suite だけを実行する (scoped)。対象外の tool では check 自体が作られないため、
+# branch protection では tool ごとの check ではなく、全 PR で必ず作られる gate だけを必須にする。
+# main への push は path で絞らず全 tool の suite を実行する (full)。push のたびにその時点の main (tip) に対して
+# 全 suite を検証するため。複数 commit をまとめた push の途中 commit は個別には検証されない。
+# この repo のマージは squash merge で 1 マージ = 1 commit = 1 push なので、main の各状態は検証済みになる。
+# 各 suite は workflow_call を持つ reusable workflow にし、この workflow からだけ呼ぶ (component workflow は pull_request / push の trigger を持たない)。
+# path の集合は、component workflow が持っていた pull_request path filter と同じにする。
+name: ci-gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # PR の変更がどの tool に当たるか、main への push なら全 tool を対象にするかを、tool ごとの真偽値にする。
+  # 判定は shell だけで行い、追加の action は使わない
+  paths:
+    runs-on: ubuntu-latest
+    outputs:
+      bash_gates: ${{ steps.changed.outputs.bash_gates }}
+      herdr_timeline: ${{ steps.changed.outputs.herdr_timeline }}
+      inbox_core: ${{ steps.changed.outputs.inbox_core }}
+      secret_scan: ${{ steps.changed.outputs.secret_scan }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # paths の選択と gate の集約の回帰テスト。component workflow の jobs を増やさないよう、paths job で毎回確かめる
+      - name: Test ci-gate scripts
+        run: bash .github/scripts/ci-gate/tests/ci-gate.test.sh
+
+      # Alloy モデルの検査も paths job で毎回実行する。jar と sha256 は script 側で固定する
+      - name: Set up Java for Alloy
+        uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Check Alloy model
+        run: bash .github/scripts/ci-gate/check-model.sh
+
+      - name: Detect changed tools
+        id: changed
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # main への push は path 判定をせず、全 tool を対象にする。分岐は detect-tools.sh に持たせる
+          if [ "$EVENT_NAME" = push ]; then
+            bash .github/scripts/ci-gate/detect-tools.sh --all >> "$GITHUB_OUTPUT"
+          else
+            # merge commit と base の merge-base から PR の変更だけを見る。base 側の更新を tool の変更として拾わない
+            git fetch --no-tags origin "refs/heads/$BASE_REF"
+            base="$(git rev-parse FETCH_HEAD)"
+            # rename は削除と追加に分け、tool の外へ移動した file も移動元の tool の変更として拾う
+            # -z (NUL 区切り) で読む。既定の引用出力 (core.quotepath) では非 ASCII の path が
+            # "...\346..." のように quote され、tool の判定に一致しなくなる (fail-open)。
+            # -c core.quotepath=false も付け、path をそのまま扱うことを明示する
+            git -c core.quotepath=false diff --name-only --no-renames -z "$base...HEAD" \
+              | bash .github/scripts/ci-gate/detect-tools.sh >> "$GITHUB_OUTPUT"
+          fi
+
+  bash-gates:
+    needs: paths
+    if: needs.paths.outputs.bash_gates == 'true'
+    uses: ./.github/workflows/bash-gates.yml
+
+  herdr-timeline:
+    needs: paths
+    if: needs.paths.outputs.herdr_timeline == 'true'
+    uses: ./.github/workflows/herdr-timeline.yml
+
+  inbox-core:
+    needs: paths
+    if: needs.paths.outputs.inbox_core == 'true'
+    uses: ./.github/workflows/inbox-core.yml
+
+  secret-scan:
+    needs: paths
+    if: needs.paths.outputs.secret_scan == 'true'
+    uses: ./.github/workflows/secret-scan.yml
+
+  # branch protection で必須にする唯一の check (PR)。main では全 suite の結果を集約する。
+  # success と skipped は成功、それ以外 (failure / cancelled / 未知) は失敗として扱う
+  gate:
+    needs: [paths, bash-gates, herdr-timeline, inbox-core, secret-scan]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check required checks
+        env:
+          PATHS: ${{ needs.paths.result }}
+          BASH_GATES: ${{ needs['bash-gates'].result }}
+          HERDR_TIMELINE: ${{ needs['herdr-timeline'].result }}
+          INBOX_CORE: ${{ needs['inbox-core'].result }}
+          SECRET_SCAN: ${{ needs['secret-scan'].result }}
+        run: |
+          bash .github/scripts/ci-gate/check-results.sh \
+            "paths=$PATHS" \
+            "bash-gates=$BASH_GATES" \
+            "herdr-timeline=$HERDR_TIMELINE" \
+            "inbox-core=$INBOX_CORE" \
+            "secret-scan=$SECRET_SCAN"
