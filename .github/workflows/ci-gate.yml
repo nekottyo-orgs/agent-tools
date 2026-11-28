@@ -36,6 +36,16 @@ jobs:
       - name: Test ci-gate scripts
         run: bash .github/scripts/ci-gate/tests/ci-gate.test.sh
 
+      # Alloy モデルの検査も paths job で毎回実行する。jar と sha256 は script 側で固定する
+      - name: Set up Java for Alloy
+        uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Check Alloy model
+        run: bash .github/scripts/ci-gate/check-model.sh
+
       - name: Detect changed tools
         id: changed
         env:
