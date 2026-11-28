@@ -1,0 +1,22 @@
+# supply chain 対策の Dependabot 設定。
+# version updates は有効化しない (open-pull-requests-limit: 0)。dependency の更新 PR は
+# 自動では作らず、必要な更新は手動で行う。
+# 一方で cooldown.default-days: 7 は security updates にも適用される。脆弱性修正版が
+# 公開されてから 7 日経つまで Dependabot は PR を作らないので、公開直後に悪意ある
+# 変更や侵害された release を掴む risk を下げる。
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 7
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 7
